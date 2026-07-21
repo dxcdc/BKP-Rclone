@@ -1,0 +1,20 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Core - Servicos Core
+Subdomínio Principal: core.cdc.org.br
+Descrição: Serviços e APIs de negócio do CDC.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /db     : Dumps de bancos transacionais.
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

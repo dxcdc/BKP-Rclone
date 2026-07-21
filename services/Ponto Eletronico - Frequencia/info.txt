@@ -1,0 +1,20 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Ponto Eletronico - Frequencia
+Subdomínio Principal: pontoeletronico.cdc.org.br
+Descrição: Sistema de ponto dos colaboradores.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /db     : Dump do banco relacional (dados jurídicos).
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

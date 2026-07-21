@@ -1,0 +1,20 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Sync - Sistema de Backup
+Subdomínio Principal: sync.cdc.org.br
+Descrição: Interface e sincronizador do Rclone.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /files  : Configurações do Rclone e scripts de automação.
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

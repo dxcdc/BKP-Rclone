@@ -1,0 +1,21 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Educa - Moodle
+Subdomínio Principal: educa.cdc.org.br
+Descrição: Plataforma de ensino EAD e cursos.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /db     : Dump do banco MySQL criptografado.
+- /files  : Arquivos do diretório moodledata.
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

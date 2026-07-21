@@ -1,0 +1,20 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Status - OpenBao
+Subdomínio Principal: status.cdc.org.br
+Descrição: Cofre de segredos e monitoramento de uptime.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /db     : Dados criptografados do cofre e status.
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

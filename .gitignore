@@ -6,6 +6,18 @@
 data/
 infra/nginx/certs/
 
+# Backup files (never commit database dumps or encrypted files)
+*.sql
+*.tar.gz
+*.gpg
+*.sha256
+backups/
+tmp/
+
+# Ignore dynamic logs generated at runtime
+services/*/logs.txt
+services/**/logs.txt
+
 # IDE / System files
 .vscode/
 .idea/

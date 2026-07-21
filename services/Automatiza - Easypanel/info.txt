@@ -1,0 +1,20 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Automatiza - Easypanel
+Subdomínio Principal: automatiza.cdc.org.br
+Descrição: Painel de automações e gerenciador Docker.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /files  : Configurações e metadados do painel (/etc/easypanel).
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================

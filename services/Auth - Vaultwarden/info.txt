@@ -1,0 +1,21 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Auth - Vaultwarden
+Subdomínio Principal: auth.cdc.org.br
+Descrição: Cofre de senhas corporativo seguro.
+Status de Backup: Ativo
+
+DADOS CONTIDOS NESTA PASTA:
+- /db     : Dump do banco SQLite/SQL criptografado.
+- /files  : Chaves e arquivos de criptografia do cofre.
+
+POLÍTICA DE RETENÇÃO:
+- Frequência: Diário (executado de madrugada).
+- Janela de Retenção: Últimos 15 dias (arquivos antigos são deletados).
+
+CONTATOS E SUPORTE:
+- Responsável Técnico: Equipe de Operações CDC
+- Canal de Alertas: #ops-alerts (Mattermost)
+- Data de Configuração Inicial: 2026-07-21
+======================================================================
