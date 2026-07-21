@@ -1,0 +1,13 @@
+# Environment variables
+.env
+.env.local
+
+# Persistent docker volumes
+data/
+infra/nginx/certs/
+
+# IDE / System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
