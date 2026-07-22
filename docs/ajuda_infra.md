@@ -205,6 +205,38 @@ Para que a aplicação seja acessível de forma externa e segura, as seguintes p
 ### 5.2 Registros DNS Necessários
 | Entrada / Hostname | Tipo | Destino | Finalidade |
 | :--- | :--- | :--- | :--- |
+| `sync.cdc.org.br` | A | `<SERVER_IP_PROD>` | Acesso à Interface Web de Backup (Rclone Web GUI) |
 | `<TODO: DEFINIR — ex: app.projeto.com>` | A | `<SERVER_IP_PROD>` | Roteamento principal do Nginx HTTPS |
 | `<TODO: DEFINIR — ex: staging.projeto.com>`| A | `<SERVER_IP_STAGING>` | Roteamento de ambiente de testes HTTPS |
 | `<TODO: DEFINIR — ex: mx.projeto.com>` | MX | `<SMTP_PROVIDER_IP>` | Registro do servidor de envio de e-mails |
+
+---
+
+## 6. Configuração da Interface Web (Rclone Web GUI) no Easypanel
+
+Para monitoramento visual, logs gráficos e navegação manual direta nos arquivos do Google Drive, configuramos um serviço dedicado no Easypanel denominado `central-de-bkp` que serve a interface oficial Rclone Web GUI no subdomínio `sync.cdc.org.br`.
+
+### 6.1 Parâmetros do Aplicativo no Easypanel
+
+Ao provisionar ou restaurar o serviço, utilize a seguinte parametrização na interface do Easypanel:
+
+*   **Tipo de Serviço:** App (Aplicativo)
+*   **Nome do Serviço:** `central-de-bkp`
+*   **Imagem Docker (Aba Fonte):** `rclone/rclone:latest`
+*   **Comando de Execução (Aba Avançado):**
+    ```text
+    rclone rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572 --rc-user dxmedusa --rc-pass <TODO: SENHA_DEFINIDA_COFRE>
+    ```
+    *Nota: Substitua `<TODO: SENHA_DEFINIDA_COFRE>` pela senha mestre cadastrada no cofre do Vaultwarden.*
+*   **Mapeamento de Armazenamento (Aba Armazenamento):**
+    Configurar uma montagem do tipo **Bind Mount** (Montagem Física):
+    *   **Host Path (Caminho na VPS):** `/root/.config/rclone`
+    *   **Mount Path (Caminho no Container):** `/config/rclone`
+*   **Mapeamento de Domínios e Porta (Aba Domínios):**
+    *   **Host (Domínio):** `sync.cdc.org.br`
+    *   **Porta de Destino (Container Port):** `5572` (Protocolo HTTP)
+    *   **HTTPS (SSL Let's Encrypt):** Ativado
+
+### 6.2 Lógica de Funcionamento e Segurança
+O container de interface lê diretamente o arquivo `/root/.config/rclone/rclone.conf` da VPS física através do Bind Mount, espelhando os dados do Google Drive (`gdrive:`) configurados. O painel fica protegido sob HTTPS seguro e autenticação baseada no usuário `dxmedusa` e a senha forte definida. Não há armazenamento local interno no container, tornando-o totalmente efêmero.
+
