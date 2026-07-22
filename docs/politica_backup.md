@@ -42,30 +42,54 @@ O script deve ser instalado em `/scripts/backup_run.sh` conforme detalhado em [a
 #!/usr/bin/env bash
 
 # ==============================================================================
-# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS)
+# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - VERSÃO SILENCIOSA
 # ==============================================================================
 # Diretivas estritas de tratamento de erro do Bash
 set -Eeuo pipefail
 
-# Variáveis globais obtidas dinamicamente baseadas na localização do script
+# Variáveis globais obtidas dinamicamente
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+TODAY_DATE=$(date +"%Y%m%d")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
-# Parâmetros de Criptografia, Notificação e Retenção Global (vindos do .env da VPS)
+# Carrega as variáveis do arquivo .env local se ele existir
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+  set -a
+  source "${PROJECT_DIR}/.env"
+  set +a
+fi
+
+# Parâmetros de Criptografia, Notificação e Retenção (vindos do .env)
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
-DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}" # Padrão global: 15 dias
+DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}"
 
-# Inicialização do diretório temporário local
+# Argumentos passados ao script
+# $1: Nome do serviço específico (opcional)
+# $2: Ação ("force" para forçar mesmo se hoje já tiver backup)
+FILTER_SERVICE="${1:-}"
+FORCE_ACTION="${2:-}"
+
+# Inicialização e preparação
 mkdir -p "${LOCAL_TMP_DIR}"
+
+# Arquivo temporário para acumular o relatório consolidado
+SUMMARY_FILE=$(mktemp)
+echo "| Serviço | Status | Tipo | Tamanho | Tempo | Detalhes |" > "${SUMMARY_FILE}"
+echo "| :--- | :---: | :---: | :---: | :---: | :--- |" >> "${SUMMARY_FILE}"
+
+# Estatísticas
+TOTAL_SERVICES_BACKED_UP=0
+TOTAL_FAILURES=0
+TOTAL_SKIPPED=0
 
 echo "[+] ======================================================================"
 echo "[+] INICIANDO ROTINA DA CENTRAL DE BACKUP: $(date)"
 echo "[+] ======================================================================"
 
-# Função para registrar logs no formato objetivo (responde às 7 perguntas)
+# Função para registrar logs
 registrar_log() {
   local servico="$1"
   local status="$2"
@@ -79,91 +103,92 @@ registrar_log() {
 
   if [[ "${status}" == "SUCESSO" ]]; then
     log_line="[${timestamp}] [SUCESSO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
+  elif [[ "${status}" == "PULADO" ]]; then
+    log_line="[${timestamp}] [PULADO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
   else
     log_line="[${timestamp}] [FALHA] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] [Erro: ${extra_info}]"
   fi
 
-  # Garante que o arquivo existe
   touch "${log_file}"
-  
-  # Adiciona a nova linha no topo do arquivo de logs local (preservação histórica incremental)
   local temp_log=$(mktemp)
   echo "${log_line}" > "${temp_log}"
   cat "${log_file}" >> "${temp_log}"
   mv "${temp_log}" "${log_file}"
 
-  # Envia o log atualizado para o Google Drive
-  rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/"
+  # Envia silenciosamente o log para o Drive (--log-level ERROR silencia avisos do rclone)
+  rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/" --log-level ERROR
 }
 
-# Função para enviar alertas ao Mattermost
-enviar_alerta_mattermost() {
-  local servico="$1"
-  local status="$2"
-  local msg="$3"
-  
-  if [[ -z "${MATTERMOST_WEBHOOK_URL}" ]]; then
-    return 0
-  fi
-
-  local icon=":white_check_mark:"
-  local title="SUCESSO NO BACKUP"
-  if [[ "${status}" == "FALHA" ]]; then
-    icon=":x:"
-    title="FALHA NO BACKUP"
-  fi
-
-  curl -s -X POST -H 'Content-Type: application/json' \
-  -d "{
-    \"username\": \"Central de Backup\",
-    \"text\": \"### ${icon} **${title}**\n* **Serviço:** ${servico}\n* **Detalhes:** ${msg}\n* **Host:** $(hostname)\n* **Data:** $(date)\"
-  }" "${MATTERMOST_WEBHOOK_URL}" > /dev/null
-}
-
-# Varre todas as pastas de serviços declaradas no Git
+# Varre as pastas no Git
 for service_path in "${SERVICES_DIR}"/*; do
   if [[ ! -d "${service_path}" ]]; then
     continue
   fi
 
   SERVICE_NAME=$(basename "${service_path}")
+  
+  # Filtro de serviço
+  if [[ -n "${FILTER_SERVICE}" ]] && [[ "${SERVICE_NAME}" != "${FILTER_SERVICE}" ]]; then
+    continue
+  fi
+
   INFO_FILE="${service_path}/info.txt"
   CONFIG_FILE="${service_path}/backup.conf"
 
   echo "[+] Processando serviço: ${SERVICE_NAME}..."
 
-  # 1. VALIDAÇÃO BIDIRECIONAL: Garante que a estrutura básica e o info.txt existam no Drive
+  # 1. VALIDAÇÃO BIDIRECIONAL
   if ! rclone size "gdrive:Central de BKP/${SERVICE_NAME}/info.txt" &>/dev/null; then
-    echo "[+] Pasta ou info.txt ausente no Drive. Criando e subindo metadados..."
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db"
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files"
+    echo "[+] Pasta ou info.txt ausente no Drive. Criando de forma silenciosa..."
+    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db" --log-level ERROR
+    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files" --log-level ERROR
     if [[ -f "${INFO_FILE}" ]]; then
-      rclone copy "${INFO_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/"
+      rclone copy "${INFO_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/" --log-level ERROR
     fi
   fi
 
-  # 2. VERIFICA SE O BACKUP ESTÁ ATIVO (Verifica se backup.conf existe)
+  # 2. VERIFICA SE O BACKUP ESTÁ ATIVO
   if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "[i] Serviço '${SERVICE_NAME}' está mapeado, mas sem backup configurado (backup.conf ausente). Pulando..."
+    echo "[i] Serviço '${SERVICE_NAME}' mapeado, mas sem backup ativo. Pulando..."
     continue
   fi
 
-  # Reset de variáveis específicas de serviço para evitar contaminação entre loops
+  # Reset de variáveis
   set +u
   unset BACKUP_TYPE DB_CONTAINER DB_USER DB_NAME SOURCE_PATH RETENCAO_DIAS
   set -u
 
-  # 3. LÊ AS CONFIGURAÇÕES DO SERVIÇO
-  # Carrega as variáveis do arquivo backup.conf de forma segura
+  # 3. LÊ AS CONFIGURAÇÕES
   set +u
   source "${CONFIG_FILE}"
   set -u
 
+  TARGET_SUBDIR="db"
+  if [[ "${BACKUP_TYPE}" == "files" ]]; then
+    TARGET_SUBDIR="files"
+  fi
+
+  # 3.1 VERIFICAÇÃO DE DUPLICIDADE (SE JÁ FOI FEITO HOJE)
+  if [[ "${FORCE_ACTION}" != "force" ]]; then
+    echo "[+] Verificando se backup de hoje (${TODAY_DATE}) já existe no Google Drive..."
+    # Lista arquivos no diretório de destino de forma silenciosa
+    if rclone lsf "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR 2>/dev/null | grep -E "${TODAY_DATE}" &>/dev/null; then
+      msg_skip="Backup de hoje ja existe"
+      echo "[i] PULADO: ${msg_skip} para ${SERVICE_NAME}."
+      registrar_log "${SERVICE_NAME}" "PULADO" "BACKUP_RUN" "${msg_skip}"
+      echo "| **${SERVICE_NAME}** | :double_vertical_bar: PULADO | ${BACKUP_TYPE} | - | - | ${msg_skip} |" >> "${SUMMARY_FILE}"
+      TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+      continue
+    fi
+  fi
+
   # Validação de Criptografia
   if [[ -z "${GPG_PASSPHRASE}" ]]; then
-    echo "[-] ERRO: Variável GPG_PASSPHRASE não está definida no ambiente da VPS."
-    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "GPG_PASSPHRASE não configurada no host"
-    enviar_alerta_mattermost "${SERVICE_NAME}" "FALHA" "GPG_PASSPHRASE não configurada no servidor."
+    err_msg="GPG_PASSPHRASE não configurada no servidor"
+    echo "[-] ERRO: ${err_msg}"
+    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${err_msg}"
+    echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE:-?} | - | - | ${err_msg} |" >> "${SUMMARY_FILE}"
+    TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
     continue
   fi
 
@@ -172,7 +197,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   COMPRESSED_FILE="${DUMP_FILE}.tar.gz"
   ENCRYPTED_FILE="${COMPRESSED_FILE}.gpg"
 
-  # 4. EXECUÇÃO DO DUMP CONFORME O TIPO
+  # 4. EXECUÇÃO DO DUMP
   DUMP_SUCCESS=true
   ERROR_MSG=""
   METRIC_SIZE="0"
@@ -185,7 +210,6 @@ for service_path in "${SERVICES_DIR}"/*; do
     postgres)
       echo "[+] Executando dump PostgreSQL para: ${SERVICE_NAME}..."
       
-      # Auto-extração inteligente de variáveis do container caso não informadas no backup.conf
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_USER|PGUSER' | head -n1 | cut -d= -f2 || echo "postgres")
@@ -195,19 +219,17 @@ for service_path in "${SERVICES_DIR}"/*; do
       fi
       set -u
 
-      # Busca a senha dinamicamente do container para evitar salvá-la no Git
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_PASSWORD|PGPASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
       if [[ -n "${DB_PASSWORD}" ]]; then
         if ! docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${DB_CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -F p > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt)
+          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido pg_dump")
         fi
       else
-        # Tenta sem senha caso seja trust local
         if ! docker exec -i "${DB_CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -F p > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt)
+          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido pg_dump")
         fi
       fi
       ;;
@@ -215,7 +237,6 @@ for service_path in "${SERVICES_DIR}"/*; do
     mysql|mariadb)
       echo "[+] Executando dump MySQL/MariaDB para: ${SERVICE_NAME}..."
       
-      # Auto-extração inteligente de variáveis do container
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_USER' | head -n1 | cut -d= -f2 || echo "root")
@@ -225,42 +246,39 @@ for service_path in "${SERVICES_DIR}"/*; do
       fi
       set -u
 
-      # Busca a senha de root ou de usuário do container
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_ROOT_PASSWORD|MYSQL_PASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
       if [[ -n "${DB_PASSWORD}" ]]; then
         if ! docker exec -i "${DB_CONTAINER}" mysqldump -u "${DB_USER}" -p"${DB_PASSWORD}" "${DB_NAME}" > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt)
+          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido mysqldump")
         fi
       else
         if ! docker exec -i "${DB_CONTAINER}" mysqldump -u "${DB_USER}" "${DB_NAME}" > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt)
+          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido mysqldump")
         fi
       fi
       ;;
 
     sqlite)
       echo "[+] Copiando base SQLite para: ${SERVICE_NAME}..."
-      # SQLite é arquivo, então apenas copiamos o arquivo de banco
       set +u
       if [[ -n "${SOURCE_PATH}" ]] && [[ -f "${SOURCE_PATH}" ]]; then
         cp "${SOURCE_PATH}" "${DUMP_FILE}.db"
       else
         DUMP_SUCCESS=false
-        ERROR_MSG="Arquivo SQLite em '${SOURCE_PATH:-}' não encontrado."
+        ERROR_MSG="Arquivo SQLite em '${SOURCE_PATH:-}' nao encontrado."
       fi
       set -u
       ;;
 
     files)
       echo "[+] Preparando backup de arquivos para: ${SERVICE_NAME}..."
-      # Apenas define sucesso, a compactação tar.gz fará o trabalho direto
       set +u
       if [[ ! -d "${SOURCE_PATH}" ]] && [[ ! -f "${SOURCE_PATH}" ]]; then
         DUMP_SUCCESS=false
-        ERROR_MSG="Diretório/Arquivo de origem '${SOURCE_PATH:-}' não existe."
+        ERROR_MSG="Origem '${SOURCE_PATH:-}' nao existe."
       fi
       set -u
       ;;
@@ -271,11 +289,12 @@ for service_path in "${SERVICES_DIR}"/*; do
       ;;
   esac
 
-  # Se o dump falhou, registra e vai para o próximo
   if [[ "${DUMP_SUCCESS}" == "false" ]]; then
-    echo "[-] FALHA ao gerar backup do serviço ${SERVICE_NAME}: ${ERROR_MSG}"
-    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${ERROR_MSG}"
-    enviar_alerta_mattermost "${SERVICE_NAME}" "FALHA" "Falha na extração de dados: ${ERROR_MSG}"
+    clean_err=$(echo "${ERROR_MSG}" | tr '\n' ' ' | tr '|' '-')
+    echo "[-] FALHA ao gerar backup do serviço ${SERVICE_NAME}: ${clean_err}"
+    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${clean_err}"
+    echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE} | - | - | ${clean_err} |" >> "${SUMMARY_FILE}"
+    TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
     rm -rf "${DUMP_FILE}"*
     continue
   fi
@@ -284,12 +303,13 @@ for service_path in "${SERVICES_DIR}"/*; do
   echo "[+] Compactando os dados..."
   set +u
   if [[ "${BACKUP_TYPE}" == "files" ]]; then
-    # Para arquivos físicos, compactamos a pasta de origem direto
     tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
+  elif [[ "${BACKUP_TYPE}" == "sqlite" ]]; then
+    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").db"
+    rm -f "${DUMP_FILE}.db"
   else
-    # Para dumps de banco, compactamos o dump gerado
-    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}")"*
-    rm -f "${DUMP_FILE}"*
+    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").sql"
+    rm -f "${DUMP_FILE}.sql"
   fi
   set -u
 
@@ -297,45 +317,39 @@ for service_path in "${SERVICES_DIR}"/*; do
   gpg --batch --yes --passphrase "${GPG_PASSPHRASE}" --symmetric --cipher-algo AES256 -o "${ENCRYPTED_FILE}" "${COMPRESSED_FILE}"
   rm -f "${COMPRESSED_FILE}"
 
-  # Gera a assinatura de integridade SHA-256
   METRIC_HASH=$(sha256sum "${ENCRYPTED_FILE}" | cut -d' ' -f1)
   sha256sum "${ENCRYPTED_FILE}" > "${ENCRYPTED_FILE}.sha256"
 
   # 6. ENVIO OFFSITE (GOOGLE DRIVE)
-  echo "[+] Enviando arquivos ao Google Drive..."
-  TARGET_SUBDIR="db"
-  if [[ "${BACKUP_TYPE}" == "files" ]]; then
-    TARGET_SUBDIR="files"
-  fi
-
-  rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
-  rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
+  rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
+  rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
 
   # 7. LIMPEZA AUTOMÁTICA DE BACKUPS ANTIGOS (RETENÇÃO)
   set +u
   RETENTION_DAYS="${RETENCAO_DIAS:-${DEFAULT_RETENTION_DAYS}}"
   set -u
   echo "[+] Aplicando política de retenção: mantendo apenas os últimos ${RETENTION_DAYS} dias..."
-  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/"
+  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR
 
   # Métricas finais
   END_TIME=$(date +%s)
   METRIC_DURATION=$((END_TIME - START_TIME))
   METRIC_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
 
-  # Limpeza dos arquivos locais temporários
   rm -f "${ENCRYPTED_FILE}"
   rm -f "${ENCRYPTED_FILE}.sha256"
 
-  # 8. REGISTRO DE SUCESSO E ALERTAS
+  # 8. REGISTRO DE SUCESSO
   LOG_DETAIL="[Método: ${BACKUP_TYPE}+tar+gpg_AES256] [Arquivo: $(basename "${ENCRYPTED_FILE}")] [Tamanho: ${METRIC_SIZE}] [Tempo: ${METRIC_DURATION}s] [SHA256: ${METRIC_HASH}]"
   registrar_log "${SERVICE_NAME}" "SUCESSO" "BACKUP_DB" "${LOG_DETAIL}"
-  enviar_alerta_mattermost "${SERVICE_NAME}" "SUCESSO" "Backup realizado e enviado com sucesso. Tamanho: ${METRIC_SIZE}. Tempo: ${METRIC_DURATION}s."
+  
+  echo "| **${SERVICE_NAME}** | :white_check_mark: SUCESSO | ${BACKUP_TYPE} | ${METRIC_SIZE} | ${METRIC_DURATION}s | Backup finalizado |" >> "${SUMMARY_FILE}"
+  TOTAL_SERVICES_BACKED_UP=$((TOTAL_SERVICES_BACKED_UP + 1))
 
   echo "[+] Serviço ${SERVICE_NAME} processado com sucesso!"
 done
 
-# Limpeza final do diretório temporário
+# Limpeza final
 rm -rf "${LOCAL_TMP_DIR}"
 echo "[+] ======================================================================"
 echo "[+] FIM DA ROTINA DA CENTRAL DE BACKUP: $(date)"
