@@ -253,10 +253,14 @@ for service_path in "${SERVICES_DIR}"/*; do
   if [[ "${BACKUP_TYPE}" == "files" ]]; then
     # Para arquivos físicos, compactamos a pasta de origem direto
     tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
+  elif [[ "${BACKUP_TYPE}" == "sqlite" ]]; then
+    # Para SQLite, compactamos o banco .db
+    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").db"
+    rm -f "${DUMP_FILE}.db"
   else
-    # Para dumps de banco, compactamos o dump gerado
-    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}")"*
-    rm -f "${DUMP_FILE}"*
+    # Para dumps de banco SQL, compactamos o arquivo .sql exato (resolve bug de globbing com espaços)
+    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").sql"
+    rm -f "${DUMP_FILE}.sql"
   fi
   set -u
 
