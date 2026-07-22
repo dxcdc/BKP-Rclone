@@ -12,9 +12,10 @@ PROJECT_DIR="/home/vier/Documentos/Code/CDC/BKP Rclone"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
-# Parâmetros de Criptografia e Notificação (vindos do .env da VPS)
+# Parâmetros de Criptografia, Notificação e Retenção Global (vindos do .env da VPS)
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
+DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}" # Padrão global: 15 dias
 
 # Inicialização do diretório temporário local
 mkdir -p "${LOCAL_TMP_DIR}"
@@ -106,9 +107,13 @@ for service_path in "${SERVICES_DIR}"/*; do
     continue
   fi
 
+  # Reset de variáveis específicas de serviço para evitar contaminação entre loops
+  set +u
+  unset BACKUP_TYPE DB_CONTAINER DB_USER DB_NAME SOURCE_PATH RETENCAO_DIAS
+  set -u
+
   # 3. LÊ AS CONFIGURAÇÕES DO SERVIÇO
   # Carrega as variáveis do arquivo backup.conf de forma segura
-  # Exemplo de variáveis esperadas: BACKUP_TYPE, DB_CONTAINER, DB_USER, DB_NAME, SOURCE_PATH
   set +u
   source "${CONFIG_FILE}"
   set -u
@@ -176,21 +181,25 @@ for service_path in "${SERVICES_DIR}"/*; do
     sqlite)
       echo "[+] Copiando base SQLite para: ${SERVICE_NAME}..."
       # SQLite é arquivo, então apenas copiamos o arquivo de banco
-      if [[ -f "${SOURCE_PATH}" ]]; then
+      set +u
+      if [[ -n "${SOURCE_PATH}" ]] && [[ -f "${SOURCE_PATH}" ]]; then
         cp "${SOURCE_PATH}" "${DUMP_FILE}.db"
       else
         DUMP_SUCCESS=false
-        ERROR_MSG="Arquivo SQLite em '${SOURCE_PATH}' não encontrado."
+        ERROR_MSG="Arquivo SQLite em '${SOURCE_PATH:-}' não encontrado."
       fi
+      set -u
       ;;
 
     files)
       echo "[+] Preparando backup de arquivos para: ${SERVICE_NAME}..."
       # Apenas define sucesso, a compactação tar.gz fará o trabalho direto
+      set +u
       if [[ ! -d "${SOURCE_PATH}" ]] && [[ ! -f "${SOURCE_PATH}" ]]; then
         DUMP_SUCCESS=false
-        ERROR_MSG="Diretório/Arquivo de origem '${SOURCE_PATH}' não existe."
+        ERROR_MSG="Diretório/Arquivo de origem '${SOURCE_PATH:-}' não existe."
       fi
+      set -u
       ;;
 
     *)
@@ -210,6 +219,7 @@ for service_path in "${SERVICES_DIR}"/*; do
 
   # 5. COMPACTAÇÃO E CRIPTOGRAFIA
   echo "[+] Compactando os dados..."
+  set +u
   if [[ "${BACKUP_TYPE}" == "files" ]]; then
     # Para arquivos físicos, compactamos a pasta de origem direto
     tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
@@ -218,6 +228,7 @@ for service_path in "${SERVICES_DIR}"/*; do
     tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}")"*
     rm -f "${DUMP_FILE}"*
   fi
+  set -u
 
   echo "[+] Criptografando com GPG (AES-256)..."
   gpg --batch --yes --passphrase "${GPG_PASSPHRASE}" --symmetric --cipher-algo AES256 -o "${ENCRYPTED_FILE}" "${COMPRESSED_FILE}"
@@ -237,6 +248,13 @@ for service_path in "${SERVICES_DIR}"/*; do
   rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
   rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
 
+  # 7. LIMPEZA AUTOMÁTICA DE BACKUPS ANTIGOS (RETENÇÃO)
+  set +u
+  RETENTION_DAYS="${RETENCAO_DIAS:-${DEFAULT_RETENTION_DAYS}}"
+  set -u
+  echo "[+] Aplicando política de retenção: mantendo apenas os últimos ${RETENTION_DAYS} dias..."
+  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/"
+
   # Métricas finais
   END_TIME=$(date +%s)
   METRIC_DURATION=$((END_TIME - START_TIME))
@@ -246,7 +264,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   rm -f "${ENCRYPTED_FILE}"
   rm -f "${ENCRYPTED_FILE}.sha256"
 
-  # 7. REGISTRO DE SUCESSO E ALERTAS
+  # 8. REGISTRO DE SUCESSO E ALERTAS
   LOG_DETAIL="[Método: ${BACKUP_TYPE}+tar+gpg_AES256] [Arquivo: $(basename "${ENCRYPTED_FILE}")] [Tamanho: ${METRIC_SIZE}] [Tempo: ${METRIC_DURATION}s] [SHA256: ${METRIC_HASH}]"
   registrar_log "${SERVICE_NAME}" "SUCESSO" "BACKUP_DB" "${LOG_DETAIL}"
   enviar_alerta_mattermost "${SERVICE_NAME}" "SUCESSO" "Backup realizado e enviado com sucesso. Tamanho: ${METRIC_SIZE}. Tempo: ${METRIC_DURATION}s."
