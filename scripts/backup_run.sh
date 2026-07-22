@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - COM RELATÓRIO CONSOLIDADO
+# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - COM FILTROS E BOTÕES
 # ==============================================================================
 # Diretivas estritas de tratamento de erro do Bash
 set -Eeuo pipefail
 
 # Variáveis globais obtidas dinamicamente
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+TODAY_DATE=$(date +"%Y%m%d")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
@@ -19,10 +20,17 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
   set +a
 fi
 
-# Parâmetros de Criptografia, Notificação e Retenção Global (vindos do .env da VPS)
+# Parâmetros de Criptografia, Notificação e Retenção (vindos do .env)
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
 DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}"
+N8N_WEBHOOK_URL="${N8N_WEBHOOK_URL:-}" # URL do n8n para receber cliques do botão
+
+# Argumentos passados ao script
+# $1: Nome do serviço específico (opcional)
+# $2: Ação ("force" para forçar mesmo se hoje já tiver backup)
+FILTER_SERVICE="${1:-}"
+FORCE_ACTION="${2:-}"
 
 # Inicialização e preparação
 mkdir -p "${LOCAL_TMP_DIR}"
@@ -32,18 +40,16 @@ SUMMARY_FILE=$(mktemp)
 echo "| Serviço | Status | Tipo | Tamanho | Tempo | Detalhes |" > "${SUMMARY_FILE}"
 echo "| :--- | :---: | :---: | :---: | :---: | :--- |" >> "${SUMMARY_FILE}"
 
-# Sinalizadores de status geral para o relatório consolidado
+# Estatísticas
 TOTAL_SERVICES_BACKED_UP=0
 TOTAL_FAILURES=0
-
-# Filtro de serviço para testes isolados
-FILTER_SERVICE="${1:-}"
+TOTAL_SKIPPED=0
 
 echo "[+] ======================================================================"
 echo "[+] INICIANDO ROTINA DA CENTRAL DE BACKUP: $(date)"
 echo "[+] ======================================================================"
 
-# Função para registrar logs no arquivo logs.txt (Local e Google Drive)
+# Função para registrar logs
 registrar_log() {
   local servico="$1"
   local status="$2"
@@ -57,24 +63,22 @@ registrar_log() {
 
   if [[ "${status}" == "SUCESSO" ]]; then
     log_line="[${timestamp}] [SUCESSO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
+  elif [[ "${status}" == "PULADO" ]]; then
+    log_line="[${timestamp}] [PULADO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
   else
     log_line="[${timestamp}] [FALHA] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] [Erro: ${extra_info}]"
   fi
 
-  # Garante que o arquivo existe
   touch "${log_file}"
-  
-  # Adiciona a nova linha no topo do arquivo de logs local (incremental)
   local temp_log=$(mktemp)
   echo "${log_line}" > "${temp_log}"
   cat "${log_file}" >> "${temp_log}"
   mv "${temp_log}" "${log_file}"
 
-  # Envia o log atualizado para o Google Drive
   rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/"
 }
 
-# Varre todas as pastas de serviços declaradas no Git
+# Varre as pastas no Git
 for service_path in "${SERVICES_DIR}"/*; do
   if [[ ! -d "${service_path}" ]]; then
     continue
@@ -82,7 +86,7 @@ for service_path in "${SERVICES_DIR}"/*; do
 
   SERVICE_NAME=$(basename "${service_path}")
   
-  # Permite executar e testar apenas um serviço específico
+  # Filtro de serviço
   if [[ -n "${FILTER_SERVICE}" ]] && [[ "${SERVICE_NAME}" != "${FILTER_SERVICE}" ]]; then
     continue
   fi
@@ -92,9 +96,9 @@ for service_path in "${SERVICES_DIR}"/*; do
 
   echo "[+] Processando serviço: ${SERVICE_NAME}..."
 
-  # 1. VALIDAÇÃO BIDIRECIONAL: Garante que a estrutura básica e o info.txt existam no Drive
+  # 1. VALIDAÇÃO BIDIRECIONAL
   if ! rclone size "gdrive:Central de BKP/${SERVICE_NAME}/info.txt" &>/dev/null; then
-    echo "[+] Pasta ou info.txt ausente no Drive. Criando e subindo metadados..."
+    echo "[+] Pasta ou info.txt ausente no Drive. Criando..."
     rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db"
     rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files"
     if [[ -f "${INFO_FILE}" ]]; then
@@ -102,21 +106,41 @@ for service_path in "${SERVICES_DIR}"/*; do
     fi
   fi
 
-  # 2. VERIFICA SE O BACKUP ESTÁ ATIVO (Verifica se backup.conf existe)
+  # 2. VERIFICA SE O BACKUP ESTÁ ATIVO
   if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "[i] Serviço '${SERVICE_NAME}' está mapeado, mas sem backup configurado (backup.conf ausente). Pulando..."
+    echo "[i] Serviço '${SERVICE_NAME}' mapeado, mas sem backup ativo. Pulando..."
     continue
   fi
 
-  # Reset de variáveis específicas de serviço para evitar contaminação entre loops
+  # Reset de variáveis
   set +u
   unset BACKUP_TYPE DB_CONTAINER DB_USER DB_NAME SOURCE_PATH RETENCAO_DIAS
   set -u
 
-  # 3. LÊ AS CONFIGURAÇÕES DO SERVIÇO
+  # 3. LÊ AS CONFIGURAÇÕES
   set +u
   source "${CONFIG_FILE}"
   set -u
+
+  TARGET_SUBDIR="db"
+  if [[ "${BACKUP_TYPE}" == "files" ]]; then
+    TARGET_SUBDIR="files"
+  fi
+
+  # 3.1 VERIFICAÇÃO DE DUPLICIDADE (SE JÁ FOI FEITO HOJE)
+  # Só executa se a ação não for "force"
+  if [[ "${FORCE_ACTION}" != "force" ]]; then
+    echo "[+] Verificando se backup de hoje (${TODAY_DATE}) já existe no Google Drive..."
+    # Lista arquivos no diretório de destino e procura pela data de hoje
+    if rclone lsf "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" 2>/dev/null | grep -E "${TODAY_DATE}" &>/dev/null; then
+      msg_skip="Backup de hoje ja existe"
+      echo "[i] PULADO: ${msg_skip} para ${SERVICE_NAME}."
+      registrar_log "${SERVICE_NAME}" "PULADO" "BACKUP_RUN" "${msg_skip}"
+      echo "| **${SERVICE_NAME}** | :double_vertical_bar: PULADO | ${BACKUP_TYPE} | - | - | ${msg_skip} |" >> "${SUMMARY_FILE}"
+      TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+      continue
+    fi
+  fi
 
   # Validação de Criptografia
   if [[ -z "${GPG_PASSPHRASE}" ]]; then
@@ -133,7 +157,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   COMPRESSED_FILE="${DUMP_FILE}.tar.gz"
   ENCRYPTED_FILE="${COMPRESSED_FILE}.gpg"
 
-  # 4. EXECUÇÃO DO DUMP CONFORME O TIPO
+  # 4. EXECUÇÃO DO DUMP
   DUMP_SUCCESS=true
   ERROR_MSG=""
   METRIC_SIZE="0"
@@ -146,7 +170,6 @@ for service_path in "${SERVICES_DIR}"/*; do
     postgres)
       echo "[+] Executando dump PostgreSQL para: ${SERVICE_NAME}..."
       
-      # Auto-extração inteligente de variáveis do container caso não informadas no backup.conf
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_USER|PGUSER' | head -n1 | cut -d= -f2 || echo "postgres")
@@ -156,10 +179,8 @@ for service_path in "${SERVICES_DIR}"/*; do
       fi
       set -u
 
-      # Busca a senha dinamicamente do container
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_PASSWORD|PGPASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
-      # Redireciona stdout para o arquivo de dump e stderr para capturar o erro exato
       if [[ -n "${DB_PASSWORD}" ]]; then
         if ! docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${DB_CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -F p > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
@@ -176,7 +197,6 @@ for service_path in "${SERVICES_DIR}"/*; do
     mysql|mariadb)
       echo "[+] Executando dump MySQL/MariaDB para: ${SERVICE_NAME}..."
       
-      # Auto-extração inteligente de variáveis do container
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_USER' | head -n1 | cut -d= -f2 || echo "root")
@@ -186,10 +206,8 @@ for service_path in "${SERVICES_DIR}"/*; do
       fi
       set -u
 
-      # Busca a senha do container
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_ROOT_PASSWORD|MYSQL_PASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
-      # Redireciona stderr para capturar falha exata
       if [[ -n "${DB_PASSWORD}" ]]; then
         if ! docker exec -i "${DB_CONTAINER}" mysqldump -u "${DB_USER}" -p"${DB_PASSWORD}" "${DB_NAME}" > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
           DUMP_SUCCESS=false
@@ -231,9 +249,7 @@ for service_path in "${SERVICES_DIR}"/*; do
       ;;
   esac
 
-  # Se o dump falhou, registra na tabela do resumo e avança
   if [[ "${DUMP_SUCCESS}" == "false" ]]; then
-    # Higieniza a mensagem de erro para caber em uma linha de tabela sem quebrar o Markdown
     clean_err=$(echo "${ERROR_MSG}" | tr '\n' ' ' | tr '|' '-')
     echo "[-] FALHA ao gerar backup do serviço ${SERVICE_NAME}: ${clean_err}"
     registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${clean_err}"
@@ -249,11 +265,9 @@ for service_path in "${SERVICES_DIR}"/*; do
   if [[ "${BACKUP_TYPE}" == "files" ]]; then
     tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
   elif [[ "${BACKUP_TYPE}" == "sqlite" ]]; then
-    # Para SQLite, compactamos o banco .db
     tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").db"
     rm -f "${DUMP_FILE}.db"
   else
-    # Para dumps de banco SQL, compactamos o arquivo .sql exato (resolve bug de globbing com espaços)
     tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").sql"
     rm -f "${DUMP_FILE}.sql"
   fi
@@ -263,17 +277,10 @@ for service_path in "${SERVICES_DIR}"/*; do
   gpg --batch --yes --passphrase "${GPG_PASSPHRASE}" --symmetric --cipher-algo AES256 -o "${ENCRYPTED_FILE}" "${COMPRESSED_FILE}"
   rm -f "${COMPRESSED_FILE}"
 
-  # Gera a assinatura de integridade SHA-256
   METRIC_HASH=$(sha256sum "${ENCRYPTED_FILE}" | cut -d' ' -f1)
   sha256sum "${ENCRYPTED_FILE}" > "${ENCRYPTED_FILE}.sha256"
 
   # 6. ENVIO OFFSITE (GOOGLE DRIVE)
-  echo "[+] Enviando arquivos ao Google Drive..."
-  TARGET_SUBDIR="db"
-  if [[ "${BACKUP_TYPE}" == "files" ]]; then
-    TARGET_SUBDIR="files"
-  fi
-
   rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
   rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
 
@@ -289,11 +296,10 @@ for service_path in "${SERVICES_DIR}"/*; do
   METRIC_DURATION=$((END_TIME - START_TIME))
   METRIC_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
 
-  # Limpeza dos arquivos locais temporários
   rm -f "${ENCRYPTED_FILE}"
   rm -f "${ENCRYPTED_FILE}.sha256"
 
-  # 8. REGISTRO DE SUCESSO NO RESUMO E LOGS
+  # 8. REGISTRO DE SUCESSO
   LOG_DETAIL="[Método: ${BACKUP_TYPE}+tar+gpg_AES256] [Arquivo: $(basename "${ENCRYPTED_FILE}")] [Tamanho: ${METRIC_SIZE}] [Tempo: ${METRIC_DURATION}s] [SHA256: ${METRIC_HASH}]"
   registrar_log "${SERVICE_NAME}" "SUCESSO" "BACKUP_DB" "${LOG_DETAIL}"
   
@@ -303,7 +309,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   echo "[+] Serviço ${SERVICE_NAME} processado com sucesso!"
 done
 
-# Limpeza final do diretório temporário
+# Limpeza final
 rm -rf "${LOCAL_TMP_DIR}"
 
 echo "[+] ======================================================================"
@@ -317,7 +323,6 @@ if [[ -n "${MATTERMOST_WEBHOOK_URL}" ]]; then
     STATUS_GERAL="### :warning: **Relatório Geral de Backups - CDC (Concluído com Alertas)**"
   fi
 
-  # Constrói o texto completo do relatório com as quebras de linha normais
   TEXT_CONTENT=$(cat <<EOF
 ${STATUS_GERAL}
 
@@ -325,15 +330,42 @@ ${STATUS_GERAL}
 * **Data:** $(date)
 * **Serviços com Sucesso:** ${TOTAL_SERVICES_BACKED_UP}
 * **Serviços com Falha:** ${TOTAL_FAILURES}
+* **Serviços Pulados (Já feitos hoje):** ${TOTAL_SKIPPED}
 
 $(cat "${SUMMARY_FILE}")
 EOF
 )
 
-  # Escapa todas as quebras de linha para "\n" e aspas para \" para gerar um JSON válido para o curl
   JSON_TEXT=$(echo "${TEXT_CONTENT}" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
   
-  PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
+  # Monta o JSON incluindo anotação de anexo interativo se n8n estiver configurado
+  if [[ -n "${N8N_WEBHOOK_URL}" ]]; then
+    PAYLOAD_JSON=$(cat <<EOF
+{
+  "text": "${JSON_TEXT}",
+  "attachments": [
+    {
+      "text": "Deseja atualizar todos os backups agora ignorando o bloqueio diário?",
+      "actions": [
+        {
+          "id": "force_all_backups",
+          "name": "Forçar Atualização de Todos",
+          "integration": {
+            "url": "${N8N_WEBHOOK_URL}",
+            "context": {
+              "action": "force_all"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+EOF
+)
+  else
+    PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
+  fi
 
   # Dispara o webhook consolidado
   curl -s -X POST -H 'Content-Type: application/json' -d "${PAYLOAD_JSON}" "${MATTERMOST_WEBHOOK_URL}" > /dev/null
