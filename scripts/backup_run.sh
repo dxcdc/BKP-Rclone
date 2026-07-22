@@ -12,6 +12,14 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
+# Carrega as variáveis do arquivo .env local do projeto se ele existir
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+  # set -a garante que as variáveis do .env sejam exportadas para os subprocessos (docker, gpg, rclone)
+  set -a
+  source "${PROJECT_DIR}/.env"
+  set +a
+fi
+
 # Parâmetros de Criptografia, Notificação e Retenção Global (vindos do .env da VPS)
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
