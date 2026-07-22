@@ -9,7 +9,6 @@ set -Eeuo pipefail
 # Variáveis globais obtidas dinamicamente
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FILTER_SERVICE="${1:-}"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
@@ -36,6 +35,9 @@ echo "| :--- | :---: | :---: | :---: | :---: | :--- |" >> "${SUMMARY_FILE}"
 # Sinalizadores de status geral para o relatório consolidado
 TOTAL_SERVICES_BACKED_UP=0
 TOTAL_FAILURES=0
+
+# Filtro de serviço para testes isolados
+FILTER_SERVICE="${1:-}"
 
 echo "[+] ======================================================================"
 echo "[+] INICIANDO ROTINA DA CENTRAL DE BACKUP: $(date)"
@@ -144,6 +146,7 @@ for service_path in "${SERVICES_DIR}"/*; do
     postgres)
       echo "[+] Executando dump PostgreSQL para: ${SERVICE_NAME}..."
       
+      # Auto-extração inteligente de variáveis do container caso não informadas no backup.conf
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_USER|PGUSER' | head -n1 | cut -d= -f2 || echo "postgres")
@@ -173,6 +176,7 @@ for service_path in "${SERVICES_DIR}"/*; do
     mysql|mariadb)
       echo "[+] Executando dump MySQL/MariaDB para: ${SERVICE_NAME}..."
       
+      # Auto-extração inteligente de variáveis do container
       set +u
       if [[ -z "${DB_USER:-}" ]]; then
         DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_USER' | head -n1 | cut -d= -f2 || echo "root")
@@ -245,10 +249,11 @@ for service_path in "${SERVICES_DIR}"/*; do
   if [[ "${BACKUP_TYPE}" == "files" ]]; then
     tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
   elif [[ "${BACKUP_TYPE}" == "sqlite" ]]; then
+    # Para SQLite, compactamos o banco .db
     tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").db"
     rm -f "${DUMP_FILE}.db"
   else
-    # Mapeamento do arquivo de dump PostgreSQL/MySQL exato sem curingas (resolve bug de globbing)
+    # Para dumps de banco SQL, compactamos o arquivo .sql exato (resolve bug de globbing com espaços)
     tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").sql"
     rm -f "${DUMP_FILE}.sql"
   fi
@@ -258,6 +263,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   gpg --batch --yes --passphrase "${GPG_PASSPHRASE}" --symmetric --cipher-algo AES256 -o "${ENCRYPTED_FILE}" "${COMPRESSED_FILE}"
   rm -f "${COMPRESSED_FILE}"
 
+  # Gera a assinatura de integridade SHA-256
   METRIC_HASH=$(sha256sum "${ENCRYPTED_FILE}" | cut -d' ' -f1)
   sha256sum "${ENCRYPTED_FILE}" > "${ENCRYPTED_FILE}.sha256"
 
@@ -311,18 +317,23 @@ if [[ -n "${MATTERMOST_WEBHOOK_URL}" ]]; then
     STATUS_GERAL="### :warning: **Relatório Geral de Backups - CDC (Concluído com Alertas)**"
   fi
 
-  # Concatena a tabela acumulada no corpo da mensagem
-  TABELA_MARKDOWN=$(cat "${SUMMARY_FILE}")
-  
-  # Cria o JSON payload de forma higienizada
-  PAYLOAD_JSON=$(cat <<EOF
-{
-  "username": "Central de Backup",
-  "icon_url": "https://mattermost.com/wp-content/uploads/2022/02/icon.png",
-  "text": "${STATUS_GERAL}\n\n* **Host:** $(hostname)\n* **Data:** $(date)\n* **Serviços com Sucesso:** ${TOTAL_SERVICES_BACKED_UP}\n* **Serviços com Falha:** ${TOTAL_FAILURES}\n\n${TABELA_MARKDOWN}"
-}
+  # Constrói o texto completo do relatório com as quebras de linha normais
+  TEXT_CONTENT=$(cat <<EOF
+${STATUS_GERAL}
+
+* **Host:** $(hostname)
+* **Data:** $(date)
+* **Serviços com Sucesso:** ${TOTAL_SERVICES_BACKED_UP}
+* **Serviços com Falha:** ${TOTAL_FAILURES}
+
+$(cat "${SUMMARY_FILE}")
 EOF
 )
+
+  # Escapa todas as quebras de linha para "\n" e aspas para \" para gerar um JSON válido para o curl
+  JSON_TEXT=$(echo "${TEXT_CONTENT}" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+  
+  PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
 
   # Dispara o webhook consolidado
   curl -s -X POST -H 'Content-Type: application/json' -d "${PAYLOAD_JSON}" "${MATTERMOST_WEBHOOK_URL}" > /dev/null
