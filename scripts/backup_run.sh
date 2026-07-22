@@ -6,9 +6,9 @@
 # Diretivas estritas de tratamento de erro do Bash
 set -Eeuo pipefail
 
-# Variáveis globais obtidas do ambiente (.env)
+# Variáveis globais obtidas dinamicamente baseadas na localização do script
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-PROJECT_DIR="/home/vier/Documentos/Code/CDC/BKP Rclone"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
