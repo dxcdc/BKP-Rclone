@@ -143,6 +143,17 @@ for service_path in "${SERVICES_DIR}"/*; do
   case "${BACKUP_TYPE}" in
     postgres)
       echo "[+] Executando dump PostgreSQL para: ${SERVICE_NAME}..."
+      
+      # Auto-extração inteligente de variáveis do container caso não informadas no backup.conf
+      set +u
+      if [[ -z "${DB_USER:-}" ]]; then
+        DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_USER|PGUSER' | head -n1 | cut -d= -f2 || echo "postgres")
+      fi
+      if [[ -z "${DB_NAME:-}" ]]; then
+        DB_NAME=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_DB|PGDATABASE' | head -n1 | cut -d= -f2 || echo "postgres")
+      fi
+      set -u
+
       # Busca a senha dinamicamente do container para evitar salvá-la no Git
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_PASSWORD|PGPASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
@@ -161,7 +172,18 @@ for service_path in "${SERVICES_DIR}"/*; do
       ;;
 
     mysql|mariadb)
-      echo "[+] Executando dump MySQL para: ${SERVICE_NAME}..."
+      echo "[+] Executando dump MySQL/MariaDB para: ${SERVICE_NAME}..."
+      
+      # Auto-extração inteligente de variáveis do container
+      set +u
+      if [[ -z "${DB_USER:-}" ]]; then
+        DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_USER' | head -n1 | cut -d= -f2 || echo "root")
+      fi
+      if [[ -z "${DB_NAME:-}" ]]; then
+        DB_NAME=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_DATABASE' | head -n1 | cut -d= -f2 || echo "")
+      fi
+      set -u
+
       # Busca a senha de root ou de usuário do container
       DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_ROOT_PASSWORD|MYSQL_PASSWORD' | head -n1 | cut -d= -f2 || echo "")
       
