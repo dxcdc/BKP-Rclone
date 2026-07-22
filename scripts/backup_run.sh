@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - COM FILTROS E BOTÕES
+# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - VERSÃO SILENCIOSA
 # ==============================================================================
 # Diretivas estritas de tratamento de erro do Bash
 set -Eeuo pipefail
@@ -24,7 +24,6 @@ fi
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
 DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}"
-N8N_WEBHOOK_URL="${N8N_WEBHOOK_URL:-}" # URL do n8n para receber cliques do botão
 
 # Argumentos passados ao script
 # $1: Nome do serviço específico (opcional)
@@ -75,7 +74,8 @@ registrar_log() {
   cat "${log_file}" >> "${temp_log}"
   mv "${temp_log}" "${log_file}"
 
-  rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/"
+  # Envia silenciosamente o log para o Drive (--log-level ERROR silencia avisos do rclone)
+  rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/" --log-level ERROR
 }
 
 # Varre as pastas no Git
@@ -98,11 +98,11 @@ for service_path in "${SERVICES_DIR}"/*; do
 
   # 1. VALIDAÇÃO BIDIRECIONAL
   if ! rclone size "gdrive:Central de BKP/${SERVICE_NAME}/info.txt" &>/dev/null; then
-    echo "[+] Pasta ou info.txt ausente no Drive. Criando..."
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db"
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files"
+    echo "[+] Pasta ou info.txt ausente no Drive. Criando de forma silenciosa..."
+    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db" --log-level ERROR
+    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files" --log-level ERROR
     if [[ -f "${INFO_FILE}" ]]; then
-      rclone copy "${INFO_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/"
+      rclone copy "${INFO_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/" --log-level ERROR
     fi
   fi
 
@@ -128,11 +128,10 @@ for service_path in "${SERVICES_DIR}"/*; do
   fi
 
   # 3.1 VERIFICAÇÃO DE DUPLICIDADE (SE JÁ FOI FEITO HOJE)
-  # Só executa se a ação não for "force"
   if [[ "${FORCE_ACTION}" != "force" ]]; then
     echo "[+] Verificando se backup de hoje (${TODAY_DATE}) já existe no Google Drive..."
-    # Lista arquivos no diretório de destino e procura pela data de hoje
-    if rclone lsf "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" 2>/dev/null | grep -E "${TODAY_DATE}" &>/dev/null; then
+    # Lista arquivos no diretório de destino de forma silenciosa
+    if rclone lsf "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR 2>/dev/null | grep -E "${TODAY_DATE}" &>/dev/null; then
       msg_skip="Backup de hoje ja existe"
       echo "[i] PULADO: ${msg_skip} para ${SERVICE_NAME}."
       registrar_log "${SERVICE_NAME}" "PULADO" "BACKUP_RUN" "${msg_skip}"
@@ -281,15 +280,15 @@ for service_path in "${SERVICES_DIR}"/*; do
   sha256sum "${ENCRYPTED_FILE}" > "${ENCRYPTED_FILE}.sha256"
 
   # 6. ENVIO OFFSITE (GOOGLE DRIVE)
-  rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
-  rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}"
+  rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
+  rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
 
   # 7. LIMPEZA AUTOMÁTICA DE BACKUPS ANTIGOS (RETENÇÃO)
   set +u
   RETENTION_DAYS="${RETENCAO_DIAS:-${DEFAULT_RETENTION_DAYS}}"
   set -u
   echo "[+] Aplicando política de retenção: mantendo apenas os últimos ${RETENTION_DAYS} dias..."
-  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/"
+  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR
 
   # Métricas finais
   END_TIME=$(date +%s)
@@ -338,34 +337,7 @@ EOF
 
   JSON_TEXT=$(echo "${TEXT_CONTENT}" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
   
-  # Monta o JSON incluindo anotação de anexo interativo se n8n estiver configurado
-  if [[ -n "${N8N_WEBHOOK_URL}" ]]; then
-    PAYLOAD_JSON=$(cat <<EOF
-{
-  "text": "${JSON_TEXT}",
-  "attachments": [
-    {
-      "text": "Deseja atualizar todos os backups agora ignorando o bloqueio diário?",
-      "actions": [
-        {
-          "id": "force_all_backups",
-          "name": "Forçar Atualização de Todos",
-          "integration": {
-            "url": "${N8N_WEBHOOK_URL}",
-            "context": {
-              "action": "force_all"
-            }
-          }
-        }
-      ]
-    }
-  ]
-}
-EOF
-)
-  else
-    PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
-  fi
+  PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
 
   # Dispara o webhook consolidado
   curl -s -X POST -H 'Content-Type: application/json' -d "${PAYLOAD_JSON}" "${MATTERMOST_WEBHOOK_URL}" > /dev/null
