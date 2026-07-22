@@ -334,7 +334,10 @@ for service_path in "${SERVICES_DIR}"/*; do
   # Métricas finais
   END_TIME=$(date +%s)
   METRIC_DURATION=$((END_TIME - START_TIME))
-  METRIC_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
+  
+  # Extração e formatação amigável do tamanho (ex: 8.0K -> 8.0 KB, 1.5M -> 1.5 MB)
+  RAW_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
+  METRIC_SIZE=$(echo "${RAW_SIZE}" | sed 's/K$/ KB/;s/M$/ MB/;s/G$/ GB/;s/B$/ B/')
 
   rm -f "${ENCRYPTED_FILE}"
   rm -f "${ENCRYPTED_FILE}.sha256"
