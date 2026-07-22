@@ -123,6 +123,8 @@ Para se aprofundar em tópicos específicos de governança, infraestrutura ou pl
 | **Infraestrutura Docker** | Docker Compose com isolamento de redes, portas e DNS | [Manual de Infraestrutura](./docs/ajuda_infra.md) |
 | **Migração & Onboarding** | SSH hardening, rsync, hashes SHA-256 e diagnósticos | [Guia de Migração](./docs/migration_guide.md) |
 | **Políticas de Backup** | Script de backup, criptografia GPG e roteiro de Restore | [Política de Backup e Restore](./docs/politica_backup.md) |
+| **Lógica GitOps** | Mapeamento bidirecional e fluxo de criação de pastas no Drive | [Lógica de Sincronização](./docs/logica_backup_gitops.md) |
 | **Diagnósticos de Falha** | Resolução de problemas comuns e filtragem de logs | [Manual de Troubleshooting](./docs/troubleshooting.md) |
 | **Gestão de Incidentes** | Postmortem blameless e metodologia dos 5 porquês | [Orientador de Postmortem](./docs/postmortem.md) |
 | **Contexto de IA** | Prompt de contexto permanente para Inteligências Artificiais | [System Prompt IA](./docs/prompt_ia.md) |
+
