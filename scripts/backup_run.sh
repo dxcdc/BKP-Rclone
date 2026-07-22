@@ -9,6 +9,7 @@ set -Eeuo pipefail
 # Variáveis globais obtidas dinamicamente
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FILTER_SERVICE="${1:-}"
 SERVICES_DIR="${PROJECT_DIR}/services"
 LOCAL_TMP_DIR="/tmp/backups_runtime"
 
@@ -78,6 +79,12 @@ for service_path in "${SERVICES_DIR}"/*; do
   fi
 
   SERVICE_NAME=$(basename "${service_path}")
+  
+  # Permite executar e testar apenas um serviço específico
+  if [[ -n "${FILTER_SERVICE}" ]] && [[ "${SERVICE_NAME}" != "${FILTER_SERVICE}" ]]; then
+    continue
+  fi
+
   INFO_FILE="${service_path}/info.txt"
   CONFIG_FILE="${service_path}/backup.conf"
 
@@ -111,7 +118,7 @@ for service_path in "${SERVICES_DIR}"/*; do
 
   # Validação de Criptografia
   if [[ -z "${GPG_PASSPHRASE}" ]]; then
-    local err_msg="GPG_PASSPHRASE não configurada no servidor"
+    err_msg="GPG_PASSPHRASE não configurada no servidor"
     echo "[-] ERRO: ${err_msg}"
     registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${err_msg}"
     echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE:-?} | - | - | ${err_msg} |" >> "${SUMMARY_FILE}"
@@ -223,7 +230,7 @@ for service_path in "${SERVICES_DIR}"/*; do
   # Se o dump falhou, registra na tabela do resumo e avança
   if [[ "${DUMP_SUCCESS}" == "false" ]]; then
     # Higieniza a mensagem de erro para caber em uma linha de tabela sem quebrar o Markdown
-    local clean_err=$(echo "${ERROR_MSG}" | tr '\n' ' ' | tr '|' '-')
+    clean_err=$(echo "${ERROR_MSG}" | tr '\n' ' ' | tr '|' '-')
     echo "[-] FALHA ao gerar backup do serviço ${SERVICE_NAME}: ${clean_err}"
     registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${clean_err}"
     echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE} | - | - | ${clean_err} |" >> "${SUMMARY_FILE}"
