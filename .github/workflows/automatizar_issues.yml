@@ -1,0 +1,135 @@
+name: Automatizar Criação de Issues
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  criar-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Criar Issues Principais
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Função auxiliar para verificar e criar issues se não existirem
+          create_issue_if_not_exists() {
+            local title="$1"
+            local body="$2"
+            local labels="$3"
+
+            echo "======================================================================"
+            echo "Verificando Issue: $title"
+            
+            # Busca issues (abertas ou fechadas) com o título exato
+            local count
+            count=$(gh issue list --state all --search "in:title \"$title\"" --json number --jq 'length')
+
+            if [ "$count" -eq 0 ]; then
+              echo "Issue não encontrada. Criando..."
+              gh issue create --title "$title" --body "$body" --label "$labels"
+              echo "Issue criada com sucesso!"
+            else
+              echo "Issue já existe (ou já foi fechada). Nenhuma ação necessária."
+            fi
+          }
+
+          # --------------------------------------------------------------------
+          # ISSUE 1: BUG - Moodle e Postal
+          # --------------------------------------------------------------------
+          read -r -d '' BODY_1 <<'EOF' || true
+          ### 📝 Descrição do Problema
+          Durante os testes manuais na VPS, os serviços **Moodle** (`Educa - Moodle`) e **Postal** (`Postal - SMTP`) apresentaram falhas constantes na fase de extração do banco de dados (dump), resultando em tamanho zerado e ausência de detalhes nos relatórios do Mattermost.
+          
+          É necessário investigar as causas (como a falta do executável `mysqldump`/`mariadb-dump` dentro do container, ou divergências de usuários e senhas de acesso aos bancos).
+
+          ### 🎯 Critérios de Aceite
+          - [ ] Inspecionar os logs de erro gravados na VPS para o Moodle e Postal.
+          - [ ] Validar a presença e a permissão do utilitário de dump correto (`mysqldump` ou `mariadb-dump`) dentro dos containers.
+          - [ ] Ajustar o script mestre `backup_run.sh` se for necessária alguma adaptação para novas versões do MariaDB.
+          - [ ] Executar com sucesso os testes individuais na VPS:
+            - `./scripts/backup_run.sh "Educa - Moodle"`
+            - `./scripts/backup_run.sh "Postal - SMTP"`
+          - [ ] Confirmar o recebimento do status `SUCESSO` com tamanho real nos logs do Mattermost.
+
+          ### 📚 Documentos de Referência
+          * [troubleshooting.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/troubleshooting.md)
+          * [politica_backup.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/politica_backup.md)
+          * [backup_run.sh](https://github.com/dxcdc/BKP-Rclone/blob/main/scripts/backup_run.sh)
+          EOF
+
+          create_issue_if_not_exists "[BUG] Diagnóstico e Resolução de Falhas nos Backups do Moodle e Postal" "$BODY_1" "bug"
+
+          # --------------------------------------------------------------------
+          # ISSUE 2: CONFIG - OpenBao (Fase 2)
+          # --------------------------------------------------------------------
+          read -r -d '' BODY_2 <<'EOF' || true
+          ### 📝 Descrição da Melhoria
+          Atualmente, as credenciais confidenciais (como `GPG_PASSPHRASE` e `MATTERMOST_WEBHOOK_URL`) estão armazenadas em texto puro no arquivo local `.env` da VPS.
+          
+          Para elevar o nível de segurança (Fase 2 do projeto), devemos integrar a rotina de backup ao **OpenBao** (`cdc-ezpoint_openbao`), de modo que o script busque dinamicamente essas credenciais através da API do cofre durante a execução, sem salvar dados sensíveis em disco.
+
+          ### 🎯 Critérios de Aceite
+          - [ ] Criar e configurar as políticas de acesso e chaves do cofre no OpenBao da VPS para a central de backups.
+          - [ ] Adaptar o script `scripts/backup_run.sh` para efetuar a chamada de API (via `curl` utilizando token seguro) e obter os segredos temporariamente em memória.
+          - [ ] Validar se as variáveis de criptografia GPG e Mattermost Webhook funcionam dinamicamente sem o arquivo `.env` configurado na VPS.
+          - [ ] Remover chaves estáticas e atualizar a documentação operacional de segurança.
+
+          ### 📚 Documentos de Referência
+          * [migration_guide.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/migration_guide.md)
+          * [politica_backup.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/politica_backup.md)
+          EOF
+
+          create_issue_if_not_exists "[CONFIG] Integração com OpenBao para Armazenamento Dinâmico de Segredos (Fase 2)" "$BODY_2" "enhancement"
+
+          # --------------------------------------------------------------------
+          # ISSUE 3: FEAT - Painel Customizado
+          # --------------------------------------------------------------------
+          read -r -d '' BODY_3 <<'EOF' || true
+          ### 📝 Descrição da Melhoria
+          A interface padrão do Rclone Web GUI (`sync.cdc.org.br`) instalada no Easypanel é muito genérica e voltada a configurações gerais do Rclone, fornecendo uma experiência visual confusa e sem foco para a equipe.
+          
+          Propomos o desenvolvimento de um painel web simplificado e exclusivo ("Central de Backup CDC"), focado no monitoramento de status da nossa VPS.
+
+          ### 🎯 Critérios de Aceite
+          - [ ] Desenvolver um dashboard web minimalista em Next.js ou HTML/CSS premium (modo escuro e design limpo).
+          - [ ] Conectar a interface gráfica à API HTTP do Rclone (porta `5572` local da VPS) para extração de status.
+          - [ ] Adicionar visualização estruturada de histórico de backups a partir da leitura dos arquivos `logs.txt` de cada serviço.
+          - [ ] Implementar um botão na interface para disparar o backup forçado de serviços de forma segura.
+
+          ### 📚 Documentos de Referência
+          * [ajuda_infra.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/ajuda_infra.md)
+          * [logica_backup_gitops.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/logica_backup_gitops.md)
+          EOF
+
+          create_issue_if_not_exists "[FEAT] Painel de Controle Customizado 'Central de Backup' (Fase 2)" "$BODY_3" "enhancement"
+
+          # --------------------------------------------------------------------
+          # ISSUE 4: DOCS - Teste de DR
+          # --------------------------------------------------------------------
+          read -r -d '' BODY_4 <<'EOF' || true
+          ### 📝 Descrição da Tarefa
+          Conforme estabelecido pela política de segurança de dados 3-2-1, é fundamental realizar testes práticos periódicos de restauração (Disaster Recovery) para garantir que os arquivos enviados ao Google Drive sejam íntegros, válidos e restauráveis em um cenário de falha catastrófica.
+
+          ### 🎯 Critérios de Aceite
+          - [ ] Executar o download de um arquivo criptografado do Google Drive em ambiente de Staging.
+          - [ ] Validar a integridade usando a assinatura `sha256sum` correspondente.
+          - [ ] Descriptografar o backup usando a passphrase simétrica GPG.
+          - [ ] Executar a importação do banco de dados (restauração) e checar a consistência das tabelas.
+          - [ ] Registrar os logs de teste, tempos de execução e métricas de consistência de restore na tabela histórica.
+
+          ### 📚 Documentos de Referência
+          * [politica_backup.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/politica_backup.md#l129-l171)
+          * [troubleshooting.md](https://github.com/dxcdc/BKP-Rclone/blob/main/docs/troubleshooting.md)
+          EOF
+
+          create_issue_if_not_exists "[DOCS] Teste Periódico Prático de Disaster Recovery (Restauração)" "$BODY_4" "documentation"
