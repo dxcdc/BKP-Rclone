@@ -1,3 +1,4 @@
+# Trigger commit: Permissões de escrita do workflow habilitadas no repositório
 name: Automatizar Criação de Issues
 
 on:
