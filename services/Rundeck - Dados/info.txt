@@ -1,0 +1,7 @@
+Servico: Rundeck - Dados
+Descricao: Dados persistentes da aplicacao Rundeck.
+Status de Backup: Ativo
+
+Conteudo: volume de dados da aplicacao, criptografado antes do envio.
+Frequencia: diaria.
+Retencao: 15 dias, respeitando o minimo de copias do mecanismo central.
