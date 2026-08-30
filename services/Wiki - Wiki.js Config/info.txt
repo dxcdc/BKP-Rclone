@@ -1,0 +1,5 @@
+Serviço: Wiki - Wiki.js Config
+Descrição: Compose, imagem e configuração declarativa da Wiki.js.
+
+Este pacote complementa o dump PostgreSQL e o backup de conteúdo. Os arquivos
+são criptografados antes do envio offsite.

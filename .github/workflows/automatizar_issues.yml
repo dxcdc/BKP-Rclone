@@ -2,9 +2,6 @@
 name: Automatizar Criação de Issues
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

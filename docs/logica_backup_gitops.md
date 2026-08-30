@@ -23,9 +23,9 @@ flowchart TD
         direction TB
         git_pull["1. git pull (Atualiza Estrutura)"]
         script_mestre["2. scripts/backup_run.sh (Executa)"]
-        docker_inspect["3. docker inspect (Extrai Senhas do Container)"]
+        docker_inspect["3. docker inspect (Resolve container e ambiente)"]
         gpg_encrypt["4. gpg --symmetric (Criptografa Dados)"]
-        rclone_sync["5. rclone (Sincroniza para o Drive)"]
+        rclone_sync["5. rclone (Copia e verifica no remote)"]
     end
 
     %% Destino (Google Drive)

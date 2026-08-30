@@ -1,0 +1,3 @@
+Serviço: Postal - SMTP Files
+Descrição: Arquivos de configuração persistentes do Postal.
+Status de Backup: Ativo

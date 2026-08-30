@@ -1,0 +1,3 @@
+Serviço: Site CDC - Banco
+Descrição: Dump consistente do PostgreSQL do Site CDC.
+Status de Backup: Ativo

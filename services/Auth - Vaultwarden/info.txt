@@ -2,12 +2,12 @@
 INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
 ======================================================================
 Serviço: Auth - Vaultwarden
-Subdomínio Principal: auth.cdc.org.br
+Subdomínio Principal: hub.cdc.org.br
 Descrição: Cofre de senhas corporativo seguro.
 Status de Backup: Ativo
 
 DADOS CONTIDOS NESTA PASTA:
-- /db     : Dump do banco SQLite/SQL criptografado.
+- /db     : Dump do banco PostgreSQL criptografado.
 - /files  : Chaves e arquivos de criptografia do cofre.
 
 POLÍTICA DE RETENÇÃO:

@@ -1,0 +1,3 @@
+Serviço: n8n - Dados
+Descrição: Dados persistentes complementares da aplicação n8n.
+Status de Backup: Ativo

@@ -1,5 +1,7 @@
 # Guia de Migração de Servidores e Onboarding Seguro
 
+> **Aviso de escopo:** os exemplos de aplicação, banco e Docker Compose abaixo são modelos históricos, não componentes deste repositório. A arquitetura vigente está no [README](../README.md).
+
 O que acontece quando precisamos migrar nossa aplicação para uma nova infraestrutura física ou lógica? O medo de perda de dados e de indisponibilidade prolongada costuma assombrar esses processos. No entanto, com um protocolo rigoroso de migração, mapeamento prévio de recursos e canais transparentes de comunicação, podemos realizar transições de servidores com risco quase nulo. Este guia estabelece o procedimento passo a passo para configuração de acesso seguro, diagnóstico do sistema de origem, empacotamento, transferência de dados e comunicação operacional.
 
 ---

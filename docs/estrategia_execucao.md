@@ -1,5 +1,7 @@
 # Estratégia de Execução, Versionamento e Deploy
 
+> **Aviso de escopo:** este documento contém modelos históricos de deploy de aplicações Docker. A Central de Backup atual não possui `docker-compose.yml`; use o [README](../README.md) e o [manual de infraestrutura](./ajuda_infra.md).
+
 Como garantimos que novas funcionalidades cheguem aos nossos usuários sem causar instabilidade na operação? A resposta está em uma estratégia de versionamento robusta e em um fluxo de deploy previsível. Este documento descreve as diretrizes para organizar nosso código, validar as entregas em diferentes ambientes e agir de forma ágil com planos de rollback estruturados quando ocorrem desvios de comportamento em produção.
 
 ---

@@ -1,0 +1,3 @@
+Serviço: Semaphore - Ansible
+Descrição: Dados persistentes de automação do Semaphore.
+Status de Backup: Ativo

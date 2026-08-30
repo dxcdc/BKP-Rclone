@@ -1,5 +1,7 @@
 # Manual de Diagnóstico e Resolução de Problemas (Troubleshooting)
 
+> **Aviso de escopo:** as seções de Docker Compose abaixo são referências históricas para aplicações externas. A Central de Backup roda no host; verifique o código de saída do script, o log do agendador e o relatório consolidado.
+
 Como agimos quando o sistema falha repentinamente? Em momentos de instabilidade em produção, a pressão emocional pode prejudicar nossa capacidade de análise técnica. Ter um guia de referência passo a passo, estruturado de forma clara e com comandos prontos para execução, reduz o tempo de resposta (MTTR) e garante uma depuração lógica dos sistemas. Este documento lista procedimentos operacionais rápidos e diagnósticos recorrentes de infraestrutura.
 
 ---

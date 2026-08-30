@@ -1,0 +1,3 @@
+Serviço: Educa - Moodle Files
+Descrição: Diretório moodledata persistido atualmente no container Moodle.
+Status de Backup: Ativo

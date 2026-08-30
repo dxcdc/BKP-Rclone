@@ -1,0 +1,3 @@
+Serviço: Admin - Orion Banco
+Descrição: Dump consistente do PostgreSQL administrativo Orion.
+Status de Backup: Ativo

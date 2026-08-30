@@ -1,0 +1,3 @@
+Serviço: VPN - WireGuard Files
+Descrição: Configurações e perfis persistentes do WireGuard, criptografados antes do envio.
+Status de Backup: Ativo

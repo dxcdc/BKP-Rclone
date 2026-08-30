@@ -1,0 +1,3 @@
+Serviço: Wiki - Wiki.js Files
+Descrição: Conteúdo persistente complementar da Wiki.js.
+Status de Backup: Ativo

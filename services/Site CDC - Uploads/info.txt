@@ -1,0 +1,3 @@
+Serviço: Site CDC - Uploads
+Descrição: Arquivos enviados e mídias persistentes do Site CDC.
+Status de Backup: Ativo

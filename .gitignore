@@ -17,6 +17,8 @@ tmp/
 # Ignore dynamic logs generated at runtime
 services/*/logs.txt
 services/**/logs.txt
+services/**/service.env
+services/**/*.pre-*
 
 # IDE / System files
 .vscode/

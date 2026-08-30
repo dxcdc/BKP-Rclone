@@ -1,350 +1,164 @@
 #!/usr/bin/env bash
-
-# ==============================================================================
-# MOTOR DE BACKUP AUTOMATIZADO E CRIPTOGRAFADO (GITOPS) - VERSÃO SILENCIOSA
-# ==============================================================================
-# Diretivas estritas de tratamento de erro do Bash
 set -Eeuo pipefail
+umask 077
 
-# Variáveis globais obtidas dinamicamente
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-TODAY_DATE=$(date +"%Y%m%d")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${PROJECT_DIR}/services"
-LOCAL_TMP_DIR="/tmp/backups_runtime"
-
-# Carrega as variáveis do arquivo .env local se ele existir
-if [[ -f "${PROJECT_DIR}/.env" ]]; then
-  set -a
-  source "${PROJECT_DIR}/.env"
-  set +a
-fi
-
-# Parâmetros de Criptografia, Notificação e Retenção (vindos do .env)
-GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
-MATTERMOST_WEBHOOK_URL="${MATTERMOST_WEBHOOK_URL:-}"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"; TODAY_DATE="$(date +%Y%m%d)"
+REMOTE_ROOT="${RCLONE_REMOTE_ROOT:-gdrive:Central de BKP}"
 DEFAULT_RETENTION_DAYS="${DEFAULT_RETENTION_DAYS:-15}"
+MINIMUM_REMOTE_BACKUPS="${MINIMUM_REMOTE_BACKUPS:-2}"
+LOCK_FILE="${BACKUP_LOCK_FILE:-/tmp/cdc-backup.lock}"
+FILTER_SERVICE="${1:-}"; FORCE_ACTION="${2:-}"
+TOTAL_SUCCESS=0; TOTAL_FAILURES=0; TOTAL_SKIPPED=0; TOTAL_INACTIVE=0
+RUNTIME_DIR=""; SUMMARY_FILE=""; CURRENT_SERVICE="inicialização"; NOTIFIED=false
 
-# Argumentos passados ao script
-# $1: Nome do serviço específico (opcional)
-# $2: Ação ("force" para forçar mesmo se hoje já tiver backup)
-FILTER_SERVICE="${1:-}"
-FORCE_ACTION="${2:-}"
+log() { printf '%s\n' "$*"; }
 
-# Inicialização e preparação
-mkdir -p "${LOCAL_TMP_DIR}"
-
-# Arquivo temporário para acumular o relatório consolidado
-SUMMARY_FILE=$(mktemp)
-echo "| Serviço | Status | Tipo | Tamanho | Tempo | Detalhes |" > "${SUMMARY_FILE}"
-echo "| :--- | :---: | :---: | :---: | :---: | :--- |" >> "${SUMMARY_FILE}"
-
-# Estatísticas
-TOTAL_SERVICES_BACKED_UP=0
-TOTAL_FAILURES=0
-TOTAL_SKIPPED=0
-
-echo "[+] ======================================================================"
-echo "[+] INICIANDO ROTINA DA CENTRAL DE BACKUP: $(date)"
-echo "[+] ======================================================================"
-
-# Função para registrar logs
-registrar_log() {
-  local servico="$1"
-  local status="$2"
-  local op="$3"
-  local extra_info="$4"
-  local log_file="${SERVICES_DIR}/${servico}/logs.txt"
-  
-  local timestamp=$(date +"%Y-%m-%d %H:%M:%S %Z")
-  local host=$(hostname)
-  local log_line=""
-
-  if [[ "${status}" == "SUCESSO" ]]; then
-    log_line="[${timestamp}] [SUCESSO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
-  elif [[ "${status}" == "PULADO" ]]; then
-    log_line="[${timestamp}] [PULADO] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] ${extra_info}"
-  else
-    log_line="[${timestamp}] [FALHA] [Host: ${host}] [Serviço: ${servico}] [Op: ${op}] [Erro: ${extra_info}]"
-  fi
-
-  touch "${log_file}"
-  local temp_log=$(mktemp)
-  echo "${log_line}" > "${temp_log}"
-  cat "${log_file}" >> "${temp_log}"
-  mv "${temp_log}" "${log_file}"
-
-  # Envia silenciosamente o log para o Drive
-  rclone copy "${log_file}" "gdrive:Central de BKP/${servico}/" --log-level ERROR
+load_config() {
+  local file="$1" allowed="$2" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*([A-Z][A-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$ ]] || { log "[-] Linha inválida em $file"; return 1; }
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    [[ " $allowed " == *" $key "* ]] || { log "[-] Chave não permitida em $file: $key"; return 1; }
+    if [[ "$value" == \"*\" && "$value" == *\" ]] || [[ "$value" == \'*\' && "$value" == *\' ]]; then value="${value:1:${#value}-2}"; fi
+    [[ "$value" != *';'* && "$value" != *'`'* && "$value" != *'$('* ]] || { log "[-] Valor inseguro em $file: $key"; return 1; }
+    printf -v "$key" '%s' "$value"
+  done < "$file"
 }
 
-# Varre as pastas no Git
-for service_path in "${SERVICES_DIR}"/*; do
-  if [[ ! -d "${service_path}" ]]; then
-    continue
+notify() {
+  [[ "$NOTIFIED" == true ]] && return 0; NOTIFIED=true
+  [[ -n "${MATTERMOST_WEBHOOK_URL:-}" && -f "${SUMMARY_FILE:-}" ]] || return 0
+  local heading body json
+  heading='### :white_check_mark: **Relatório Geral de Backups - CDC (Sucesso)**'
+  (( TOTAL_FAILURES > 0 )) && heading='### :warning: **Relatório Geral de Backups - CDC (Com falhas)**'
+  body="$heading\n\n* **Host:** $(hostname)\n* **Sucessos:** $TOTAL_SUCCESS\n* **Falhas:** $TOTAL_FAILURES\n* **Pulados:** $TOTAL_SKIPPED\n* **Inativos:** $TOTAL_INACTIVE\n\n$(cat "$SUMMARY_FILE")"
+  json="$(printf '%s' "$body" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g')"
+  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 -H 'Content-Type: application/json' --data "{\"text\":\"$json\"}" "$MATTERMOST_WEBHOOK_URL" >/dev/null
+}
+
+cleanup() {
+  local code=$?; trap - EXIT INT TERM
+  if (( code != 0 )) && [[ -f "${SUMMARY_FILE:-}" ]] && (( TOTAL_FAILURES == 0 )); then
+    printf '| **%s** | :x: FALHA | - | - | - | Execução interrompida |\n' "$CURRENT_SERVICE" >> "$SUMMARY_FILE"; TOTAL_FAILURES=1
   fi
+  notify || code=1
+  [[ -n "$RUNTIME_DIR" && -d "$RUNTIME_DIR" ]] && rm -rf -- "$RUNTIME_DIR"
+  exit "$code"
+}
+trap cleanup EXIT; trap 'exit 130' INT TERM
 
-  SERVICE_NAME=$(basename "${service_path}")
-  
-  # Filtro de serviço
-  if [[ -n "${FILTER_SERVICE}" ]] && [[ "${SERVICE_NAME}" != "${FILTER_SERVICE}" ]]; then
-    continue
-  fi
+require_tools() { local c missing=(); for c in docker flock gpg rclone sha256sum tar curl; do command -v "$c" >/dev/null || missing+=("$c"); done; ((${#missing[@]}==0)) || { log "[-] Dependências ausentes: ${missing[*]}"; return 1; }; }
 
-  INFO_FILE="${service_path}/info.txt"
-  CONFIG_FILE="${service_path}/backup.conf"
+resolve_container() {
+  local selector="$1" matches count
+  docker container inspect "$selector" >/dev/null 2>&1 && { printf '%s\n' "$selector"; return; }
+  matches="$(docker ps --filter status=running --format '{{.Names}}' | awk -v selector="$selector" '$0 == selector || index($0, selector ".1.") == 1')"; count="$(sed '/^$/d' <<<"$matches" | wc -l)"
+  [[ "$count" -eq 1 ]] || { log "[-] Seletor '$selector' encontrou $count containers." >&2; return 1; }
+  printf '%s\n' "$matches"
+}
 
-  echo "[+] Processando serviço: ${SERVICE_NAME}..."
+container_env() { docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$1" | sed -n -E "s/^($2)=(.*)$/\\2/p" | head -n1 || true; }
+sanitize_error() { tr '\n|' ' -' < "$1" | cut -c1-500; }
 
-  # 1. VALIDAÇÃO BIDIRECIONAL
-  if ! rclone size "gdrive:Central de BKP/${SERVICE_NAME}/info.txt" &>/dev/null; then
-    echo "[+] Pasta ou info.txt ausente no Drive. Criando de forma silenciosa..."
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/db" --log-level ERROR
-    rclone mkdir "gdrive:Central de BKP/${SERVICE_NAME}/files" --log-level ERROR
-    if [[ -f "${INFO_FILE}" ]]; then
-      rclone copy "${INFO_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/" --log-level ERROR
-    fi
-  fi
+record_log() {
+  local service="$1" status="$2" detail="$3" file="${SERVICES_DIR}/$1/logs.txt" tmp
+  tmp="$(mktemp "$RUNTIME_DIR/log.XXXXXX")"
+  printf '[%s] [%s] [Host: %s] [Serviço: %s] %s\n' "$(date +'%F %T %Z')" "$status" "$(hostname)" "$service" "$detail" > "$tmp"
+  [[ -f "$file" ]] && cat "$file" >> "$tmp"; mv "$tmp" "$file"
+  rclone copyto "$file" "$REMOTE_ROOT/$service/logs.txt" --log-level ERROR
+}
 
-  # 2. VERIFICA SE O BACKUP ESTÁ ATIVO
-  if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "[i] Serviço '${SERVICE_NAME}' mapeado, mas sem backup ativo. Pulando..."
-    continue
-  fi
+failure() {
+  local service="$1" type="$2" detail="${3:-Erro não detalhado}"
+  TOTAL_FAILURES=$((TOTAL_FAILURES+1)); record_log "$service" FALHA "$detail" || true
+  printf '| **%s** | :x: FALHA | %s | - | - | %s |\n' "$service" "$type" "$detail" >> "$SUMMARY_FILE"
+}
 
-  # Reset de variáveis
-  set +u
+process_service() {
+  local path="$1" service config target remote base archive encrypted err started container='' container_copy='' password command hash size duration retention count
+  service="$(basename "$path")"; CURRENT_SERVICE="$service"; config="$path/backup.conf"; log "[+] Processando: $service"
+  rclone mkdir "$REMOTE_ROOT/$service/db" --log-level ERROR; rclone mkdir "$REMOTE_ROOT/$service/files" --log-level ERROR
+  [[ -f "$path/info.txt" ]] && rclone copyto "$path/info.txt" "$REMOTE_ROOT/$service/info.txt" --log-level ERROR
+  if [[ ! -f "$config" ]]; then TOTAL_INACTIVE=$((TOTAL_INACTIVE+1)); printf '| **%s** | :white_circle: INATIVO | - | - | - | Sem backup.conf |\n' "$service" >> "$SUMMARY_FILE"; return; fi
   unset BACKUP_TYPE DB_CONTAINER DB_USER DB_NAME SOURCE_PATH RETENCAO_DIAS
-  set -u
-
-  # 3. LÊ AS CONFIGURAÇÕES
-  set +u
-  source "${CONFIG_FILE}"
-  set -u
-
-  TARGET_SUBDIR="db"
-  if [[ "${BACKUP_TYPE}" == "files" ]]; then
-    TARGET_SUBDIR="files"
-  fi
-
-  # 3.1 VERIFICAÇÃO DE DUPLICIDADE (SE JÁ FOI FEITO HOJE)
-  if [[ "${FORCE_ACTION}" != "force" ]]; then
-    echo "[+] Verificando se backup de hoje (${TODAY_DATE}) já existe no Google Drive..."
-    # Lista arquivos no diretório de destino de forma silenciosa
-    if rclone lsf "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR 2>/dev/null | grep -E "${TODAY_DATE}" &>/dev/null; then
-      msg_skip="Backup de hoje ja existe"
-      echo "[i] PULADO: ${msg_skip} para ${SERVICE_NAME}."
-      registrar_log "${SERVICE_NAME}" "PULADO" "BACKUP_RUN" "${msg_skip}"
-      echo "| **${SERVICE_NAME}** | :double_vertical_bar: PULADO | ${BACKUP_TYPE} | - | - | ${msg_skip} |" >> "${SUMMARY_FILE}"
-      TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
-      continue
+  load_config "$config" 'BACKUP_TYPE DB_CONTAINER DB_USER DB_NAME SOURCE_PATH RETENCAO_DIAS FRAPPE_CONTAINER FRAPPE_SITE EXTERNAL_REMOTE_SUBDIR' || { failure "$service" '?' 'Configuração inválida'; return; }
+  [[ "${BACKUP_TYPE:-}" =~ ^(postgres|mysql|mariadb|sqlite|container_sqlite|files|container_files|vaultwarden|frappe)$ ]] || { failure "$service" "${BACKUP_TYPE:-?}" 'Tipo inválido'; return; }
+  target=db; [[ "$BACKUP_TYPE" == files || "$BACKUP_TYPE" == container_files || "$BACKUP_TYPE" == vaultwarden ]] && target=files; [[ "$BACKUP_TYPE" == frappe ]] && target="${EXTERNAL_REMOTE_SUBDIR:-full}"; remote="$REMOTE_ROOT/$service/$target"
+  if [[ "$BACKUP_TYPE" == frappe ]]; then
+    if rclone lsf "$remote" --files-only --include "*${TODAY_DATE}*.gpg" --log-level ERROR 2>/dev/null | grep -q .; then
+      TOTAL_SUCCESS=$((TOTAL_SUCCESS+1)); record_log "$service" SUCESSO 'Backup Frappe externo de hoje confirmado'; printf '| **%s** | :white_check_mark: SUCESSO | frappe | - | - | Backup externo confirmado |\n' "$service" >> "$SUMMARY_FILE"; return
     fi
+    failure "$service" frappe 'Backup Frappe externo de hoje não encontrado'; return
   fi
-
-  # Validação de Criptografia
-  if [[ -z "${GPG_PASSPHRASE}" ]]; then
-    err_msg="GPG_PASSPHRASE não configurada no servidor"
-    echo "[-] ERRO: ${err_msg}"
-    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${err_msg}"
-    echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE:-?} | - | - | ${err_msg} |" >> "${SUMMARY_FILE}"
-    TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
-    continue
+  if [[ "$FORCE_ACTION" != force ]] && rclone lsf "$remote" --files-only --include "*_${TODAY_DATE}_*.gpg" --log-level ERROR 2>/dev/null | grep -q .; then
+    TOTAL_SKIPPED=$((TOTAL_SKIPPED+1)); record_log "$service" PULADO 'Backup de hoje já existe'; printf '| **%s** | :double_vertical_bar: PULADO | %s | - | - | Já realizado hoje |\n' "$service" "$BACKUP_TYPE" >> "$SUMMARY_FILE"; return
   fi
-
-  # Nomes dos arquivos temporários locais
-  DUMP_FILE="${LOCAL_TMP_DIR}/dump_${SERVICE_NAME}_${TIMESTAMP}"
-  COMPRESSED_FILE="${DUMP_FILE}.tar.gz"
-  ENCRYPTED_FILE="${COMPRESSED_FILE}.gpg"
-
-  # 4. EXECUÇÃO DO DUMP
-  DUMP_SUCCESS=true
-  ERROR_MSG=""
-  METRIC_SIZE="0"
-  METRIC_DURATION="0"
-  METRIC_HASH=""
-
-  START_TIME=$(date +%s)
-
-  case "${BACKUP_TYPE}" in
+  base="$RUNTIME_DIR/dump_${service//\//_}_$TIMESTAMP"; archive="$base.tar.gz"; encrypted="$archive.gpg"; err="$(mktemp "$RUNTIME_DIR/error.XXXXXX")"; started="$(date +%s)"
+  log "[+] Gerando origem do backup ($BACKUP_TYPE)..."
+  case "$BACKUP_TYPE" in
     postgres)
-      echo "[+] Executando dump PostgreSQL para: ${SERVICE_NAME}..."
-      
-      set +u
-      if [[ -z "${DB_USER:-}" ]]; then
-        DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_USER|PGUSER' | head -n1 | cut -d= -f2 || echo "postgres")
-      fi
-      if [[ -z "${DB_NAME:-}" ]]; then
-        DB_NAME=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_DB|PGDATABASE' | head -n1 | cut -d= -f2 || echo "postgres")
-      fi
-      set -u
-
-      DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'POSTGRES_PASSWORD|PGPASSWORD' | head -n1 | cut -d= -f2 || echo "")
-      
-      if [[ -n "${DB_PASSWORD}" ]]; then
-        if ! docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${DB_CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -F p > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
-          DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido pg_dump")
-        fi
-      else
-        if ! docker exec -i "${DB_CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -F p > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
-          DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido pg_dump")
-        fi
-      fi
-      ;;
-
+      container="$(resolve_container "${DB_CONTAINER:?DB_CONTAINER obrigatório}")" || { failure "$service" "$BACKUP_TYPE" 'Container ausente ou ambíguo'; return; }
+      DB_USER="${DB_USER:-$(container_env "$container" 'POSTGRES_USER|PGUSER')}"; DB_USER="${DB_USER:-postgres}"; DB_NAME="${DB_NAME:-$(container_env "$container" 'POSTGRES_DB|PGDATABASE')}"; DB_NAME="${DB_NAME:-postgres}"; password="$(container_env "$container" 'POSTGRES_PASSWORD|PGPASSWORD')"
+      PGPASSWORD="$password" docker exec -i -e PGPASSWORD "$container" pg_dump -U "$DB_USER" -d "$DB_NAME" -F p > "$base.sql" 2>"$err" || { failure "$service" "$BACKUP_TYPE" "$(sanitize_error "$err")"; return; }
+      tar -czf "$archive" -C "$RUNTIME_DIR" "$(basename "$base").sql"; rm -f -- "$base.sql" ;;
     mysql|mariadb)
-      echo "[+] Executando dump MySQL/MariaDB para: ${SERVICE_NAME}..."
-      
-      set +u
-      if [[ -z "${DB_USER:-}" ]]; then
-        DB_USER=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_USER' | head -n1 | cut -d= -f2 || echo "root")
-      fi
-      if [[ -z "${DB_NAME:-}" ]]; then
-        DB_NAME=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_DATABASE' | head -n1 | cut -d= -f2 || echo "")
-      fi
-      set -u
-
-      DB_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${DB_CONTAINER}" | grep -iE 'MYSQL_ROOT_PASSWORD|MYSQL_PASSWORD' | head -n1 | cut -d= -f2 || echo "")
-      
-      if [[ -n "${DB_PASSWORD}" ]]; then
-        if ! docker exec -i "${DB_CONTAINER}" mysqldump -u "${DB_USER}" -p"${DB_PASSWORD}" "${DB_NAME}" > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
-          DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido mysqldump")
-        fi
-      else
-        if ! docker exec -i "${DB_CONTAINER}" mysqldump -u "${DB_USER}" "${DB_NAME}" > "${DUMP_FILE}.sql" 2>/tmp/db_err.txt; then
-          DUMP_SUCCESS=false
-          ERROR_MSG=$(cat /tmp/db_err.txt || echo "Erro desconhecido mysqldump")
-        fi
-      fi
-      ;;
-
+      container="$(resolve_container "${DB_CONTAINER:?DB_CONTAINER obrigatório}")" || { failure "$service" "$BACKUP_TYPE" 'Container ausente ou ambíguo'; return; }
+      DB_USER="${DB_USER:-$(container_env "$container" 'MYSQL_USER|MARIADB_USER')}"; DB_USER="${DB_USER:-root}"; DB_NAME="${DB_NAME:-$(container_env "$container" 'MYSQL_DATABASE|MARIADB_DATABASE')}"; [[ -n "$DB_NAME" ]] || { failure "$service" "$BACKUP_TYPE" 'DB_NAME não identificado'; return; }; password="$(container_env "$container" 'MYSQL_ROOT_PASSWORD|MYSQL_PASSWORD|MARIADB_ROOT_PASSWORD|MARIADB_PASSWORD')"
+      command=mysqldump; docker exec "$container" sh -c 'command -v mariadb-dump >/dev/null' >/dev/null 2>&1 && command=mariadb-dump
+      MYSQL_PWD="$password" docker exec -i -e MYSQL_PWD "$container" "$command" -u "$DB_USER" -- "$DB_NAME" > "$base.sql" 2>"$err" || { failure "$service" "$BACKUP_TYPE" "$(sanitize_error "$err")"; return; }
+      tar -czf "$archive" -C "$RUNTIME_DIR" "$(basename "$base").sql"; rm -f -- "$base.sql" ;;
     sqlite)
-      echo "[+] Copiando base SQLite para: ${SERVICE_NAME}..."
-      set +u
-      if [[ -n "${SOURCE_PATH}" ]] && [[ -f "${SOURCE_PATH}" ]]; then
-        cp "${SOURCE_PATH}" "${DUMP_FILE}.db"
-      else
-        DUMP_SUCCESS=false
-        ERROR_MSG="Arquivo SQLite em '${SOURCE_PATH:-}' nao encontrado."
-      fi
-      set -u
-      ;;
-
+      [[ -f "${SOURCE_PATH:-}" ]] && command -v sqlite3 >/dev/null || { failure "$service" sqlite 'SQLite ou sqlite3 indisponível'; return; }
+      sqlite3 "$SOURCE_PATH" ".backup '$base.db'" 2>"$err" || { failure "$service" sqlite "$(sanitize_error "$err")"; return; }; tar -czf "$archive" -C "$RUNTIME_DIR" "$(basename "$base").db"; rm -f -- "$base.db" ;;
+    container_sqlite)
+      container="$(resolve_container "${DB_CONTAINER:?DB_CONTAINER obrigatório}")" || { failure "$service" container_sqlite 'Container ausente ou ambíguo'; return; }
+      [[ -n "${SOURCE_PATH:-}" ]] || { failure "$service" container_sqlite 'SOURCE_PATH obrigatório'; return; }
+      container_copy="/tmp/cdc-backup-${TIMESTAMP}.sqlite3"
+      docker exec "$container" python -c 'import sqlite3,sys; src=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()' "$SOURCE_PATH" "$container_copy" 2>"$err" || { failure "$service" container_sqlite "$(sanitize_error "$err")"; return; }
+      docker cp "$container:$container_copy" "$base.db"; docker exec "$container" rm -f "$container_copy"; tar -czf "$archive" -C "$RUNTIME_DIR" "$(basename "$base").db"; rm -f -- "$base.db" ;;
     files)
-      echo "[+] Preparando backup de arquivos para: ${SERVICE_NAME}..."
-      set +u
-      if [[ ! -d "${SOURCE_PATH}" ]] && [[ ! -f "${SOURCE_PATH}" ]]; then
-        DUMP_SUCCESS=false
-        ERROR_MSG="Origem '${SOURCE_PATH:-}' nao existe."
-      fi
-      set -u
-      ;;
-
-    *)
-      DUMP_SUCCESS=false
-      ERROR_MSG="Tipo de backup '${BACKUP_TYPE}' desconhecido."
-      ;;
+      [[ -e "${SOURCE_PATH:-}" ]] || { failure "$service" files 'Origem não encontrada'; return; }
+      tar --warning=no-file-changed --ignore-failed-read -czf "$archive" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")" 2>"$err" || { failure "$service" files "$(sanitize_error "$err")"; return; } ;;
+    container_files)
+      container="$(resolve_container "${DB_CONTAINER:?DB_CONTAINER obrigatório}")" || { failure "$service" container_files 'Container ausente ou ambíguo'; return; }
+      [[ -n "${SOURCE_PATH:-}" ]] || { failure "$service" container_files 'SOURCE_PATH obrigatório'; return; }
+      docker exec "$container" test -e "$SOURCE_PATH" || { failure "$service" container_files 'Origem não encontrada no container'; return; }
+      docker exec "$container" tar -czf - -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")" > "$archive" 2>"$err" || { failure "$service" container_files "$(sanitize_error "$err")"; return; } ;;
+    vaultwarden)
+      [[ -d "${SOURCE_PATH:-}" && -f "$SOURCE_PATH/db.sqlite3" ]] && command -v sqlite3 >/dev/null || { failure "$service" vaultwarden 'Volume, db.sqlite3 ou sqlite3 indisponível'; return; }
+      sqlite3 "$SOURCE_PATH/db.sqlite3" ".backup '$RUNTIME_DIR/db.sqlite3'" 2>"$err" || { failure "$service" vaultwarden "$(sanitize_error "$err")"; return; }
+      tar --warning=no-file-changed --ignore-failed-read -czf "$archive" --exclude='./db.sqlite3' --exclude='./db.sqlite3-shm' --exclude='./db.sqlite3-wal' -C "$SOURCE_PATH" . -C "$RUNTIME_DIR" db.sqlite3 2>"$err" || { failure "$service" vaultwarden "$(sanitize_error "$err")"; return; }
+      rm -f -- "$RUNTIME_DIR/db.sqlite3" ;;
   esac
+  log '[+] Compactação concluída; iniciando criptografia...'
+  printf '%s' "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 -o "$encrypted" "$archive"; rm -f -- "$archive"
+  hash="$(sha256sum "$encrypted" | cut -d' ' -f1)"; printf '%s  %s\n' "$hash" "$(basename "$encrypted")" > "$encrypted.sha256"
+  log '[+] Enviando e verificando o objeto remoto...'
+  rclone copy "$encrypted" "$remote" --log-level ERROR; rclone copy "$encrypted.sha256" "$remote" --log-level ERROR
+  mkdir -p "$RUNTIME_DIR/verify"; rclone copyto "$remote/$(basename "$encrypted")" "$RUNTIME_DIR/verify/$(basename "$encrypted")" --log-level ERROR
+  printf '%s  %s\n' "$hash" "$RUNTIME_DIR/verify/$(basename "$encrypted")" | sha256sum -c - >/dev/null
+  log '[+] Upload verificado; avaliando retenção...'
+  retention="${RETENCAO_DIAS:-$DEFAULT_RETENTION_DAYS}"; [[ "$retention" =~ ^[0-9]+$ && "$retention" -ge 1 ]] || { failure "$service" "$BACKUP_TYPE" 'Retenção inválida'; return; }
+  count="$(rclone lsf "$remote" --files-only --include '*.gpg' --log-level ERROR | sed '/^$/d' | wc -l)"
+  if (( count > MINIMUM_REMOTE_BACKUPS )); then rclone delete "$remote" --min-age "${retention}d" --include '*.gpg' --include '*.gpg.sha256' --log-level ERROR; else log "[i] Retenção adiada: somente $count backup(s)."; fi
+  duration=$(( $(date +%s)-started )); size="$(du -h "$encrypted" | cut -f1)"; record_log "$service" SUCESSO "[Arquivo: $(basename "$encrypted")] [Tamanho: $size] [Tempo: ${duration}s] [SHA256: $hash]"
+  printf '| **%s** | :white_check_mark: SUCESSO | %s | %s | %ss | Upload verificado |\n' "$service" "$BACKUP_TYPE" "$size" "$duration" >> "$SUMMARY_FILE"; TOTAL_SUCCESS=$((TOTAL_SUCCESS+1))
+}
 
-  if [[ "${DUMP_SUCCESS}" == "false" ]]; then
-    clean_err=$(echo "${ERROR_MSG}" | tr '\n' ' ' | tr '|' '-')
-    echo "[-] FALHA ao gerar backup do serviço ${SERVICE_NAME}: ${clean_err}"
-    registrar_log "${SERVICE_NAME}" "FALHA" "BACKUP_RUN" "${clean_err}"
-    echo "| **${SERVICE_NAME}** | :x: FALHA | ${BACKUP_TYPE} | - | - | ${clean_err} |" >> "${SUMMARY_FILE}"
-    TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
-    rm -rf "${DUMP_FILE}"*
-    continue
-  fi
-
-  # 5. COMPACTAÇÃO E CRIPTOGRAFIA
-  echo "[+] Compactando os dados..."
-  set +u
-  if [[ "${BACKUP_TYPE}" == "files" ]]; then
-    tar -czf "${COMPRESSED_FILE}" -C "$(dirname "${SOURCE_PATH}")" "$(basename "${SOURCE_PATH}")"
-  elif [[ "${BACKUP_TYPE}" == "sqlite" ]]; then
-    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").db"
-    rm -f "${DUMP_FILE}.db"
-  else
-    tar -czf "${COMPRESSED_FILE}" -C "${LOCAL_TMP_DIR}" "$(basename "${DUMP_FILE}").sql"
-    rm -f "${DUMP_FILE}.sql"
-  fi
-  set -u
-
-  echo "[+] Criptografando com GPG (AES-256)..."
-  gpg --batch --yes --passphrase "${GPG_PASSPHRASE}" --symmetric --cipher-algo AES256 -o "${ENCRYPTED_FILE}" "${COMPRESSED_FILE}"
-  rm -f "${COMPRESSED_FILE}"
-
-  METRIC_HASH=$(sha256sum "${ENCRYPTED_FILE}" | cut -d' ' -f1)
-  sha256sum "${ENCRYPTED_FILE}" > "${ENCRYPTED_FILE}.sha256"
-
-  # 6. ENVIO OFFSITE (GOOGLE DRIVE)
-  rclone copy "${ENCRYPTED_FILE}" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
-  rclone copy "${ENCRYPTED_FILE}.sha256" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}" --log-level ERROR
-
-  # 7. LIMPEZA AUTOMÁTICA DE BACKUPS ANTIGOS (RETENÇÃO)
-  set +u
-  RETENTION_DAYS="${RETENCAO_DIAS:-${DEFAULT_RETENTION_DAYS}}"
-  set -u
-  echo "[+] Aplicando política de retenção: mantendo apenas os últimos ${RETENTION_DAYS} dias..."
-  rclone delete --min-age "${RETENTION_DAYS}d" "gdrive:Central de BKP/${SERVICE_NAME}/${TARGET_SUBDIR}/" --log-level ERROR
-
-  # Métricas finais
-  END_TIME=$(date +%s)
-  METRIC_DURATION=$((END_TIME - START_TIME))
-  
-  # Extração e formatação amigável do tamanho (ex: 8.0K -> 8.0 KB, 1.5M -> 1.5 MB)
-  RAW_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
-  METRIC_SIZE=$(echo "${RAW_SIZE}" | sed 's/K$/ KB/;s/M$/ MB/;s/G$/ GB/;s/B$/ B/')
-
-  rm -f "${ENCRYPTED_FILE}"
-  rm -f "${ENCRYPTED_FILE}.sha256"
-
-  # 8. REGISTRO DE SUCESSO
-  LOG_DETAIL="[Método: ${BACKUP_TYPE}+tar+gpg_AES256] [Arquivo: $(basename "${ENCRYPTED_FILE}")] [Tamanho: ${METRIC_SIZE}] [Tempo: ${METRIC_DURATION}s] [SHA256: ${METRIC_HASH}]"
-  registrar_log "${SERVICE_NAME}" "SUCESSO" "BACKUP_DB" "${LOG_DETAIL}"
-  
-  echo "| **${SERVICE_NAME}** | :white_check_mark: SUCESSO | ${BACKUP_TYPE} | ${METRIC_SIZE} | ${METRIC_DURATION}s | Backup finalizado |" >> "${SUMMARY_FILE}"
-  TOTAL_SERVICES_BACKED_UP=$((TOTAL_SERVICES_BACKED_UP + 1))
-
-  echo "[+] Serviço ${SERVICE_NAME} processado com sucesso!"
-done
-
-# Limpeza final
-rm -rf "${LOCAL_TMP_DIR}"
-
-echo "[+] ======================================================================"
-echo "[+] ENVIANDO NOTIFICAÇÃO CONSOLIDADA AO MATTERMOST: $(date)"
-echo "[+] ======================================================================"
-
-# 9. DISPARO DO WEBHOOK CONSOLIDADO AO MATTERMOST
-if [[ -n "${MATTERMOST_WEBHOOK_URL}" ]]; then
-  STATUS_GERAL="### :white_check_mark: **Relatório Geral de Backups - CDC (Sucesso)**"
-  if [[ ${TOTAL_FAILURES} -gt 0 ]]; then
-    STATUS_GERAL="### :warning: **Relatório Geral de Backups - CDC (Concluído com Alertas)**"
-  fi
-
-  TEXT_CONTENT=$(cat <<EOF
-${STATUS_GERAL}
-
-* **Host:** $(hostname)
-* **Data:** $(date)
-* **Serviços com Sucesso:** ${TOTAL_SERVICES_BACKED_UP}
-* **Serviços com Falha:** ${TOTAL_FAILURES}
-* **Serviços Pulados (Já feitos hoje):** ${TOTAL_SKIPPED}
-
-$(cat "${SUMMARY_FILE}")
-EOF
-)
-
-  JSON_TEXT=$(echo "${TEXT_CONTENT}" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
-  
-  PAYLOAD_JSON="{\"text\": \"${JSON_TEXT}\"}"
-
-  # Dispara o webhook consolidado
-  curl -s -X POST -H 'Content-Type: application/json' -d "${PAYLOAD_JSON}" "${MATTERMOST_WEBHOOK_URL}" > /dev/null
-fi
-
-rm -f "${SUMMARY_FILE}"
-echo "[+] Rotina finalizada com sucesso."
+main() {
+  load_config "$PROJECT_DIR/.env" 'GPG_PASSPHRASE MATTERMOST_WEBHOOK_URL DEFAULT_RETENTION_DAYS MINIMUM_REMOTE_BACKUPS RCLONE_REMOTE_ROOT BACKUP_LOCK_FILE'
+  REMOTE_ROOT="${RCLONE_REMOTE_ROOT:-$REMOTE_ROOT}"; LOCK_FILE="${BACKUP_LOCK_FILE:-$LOCK_FILE}"
+  [[ -n "${GPG_PASSPHRASE:-}" ]] || { log '[-] GPG_PASSPHRASE não configurada'; return 1; }
+  [[ "$DEFAULT_RETENTION_DAYS" =~ ^[0-9]+$ && "$DEFAULT_RETENTION_DAYS" -ge 1 ]] || { log '[-] DEFAULT_RETENTION_DAYS inválido'; return 1; }
+  [[ "$MINIMUM_REMOTE_BACKUPS" =~ ^[0-9]+$ && "$MINIMUM_REMOTE_BACKUPS" -ge 1 ]] || { log '[-] MINIMUM_REMOTE_BACKUPS inválido'; return 1; }; require_tools
+  exec 9>"$LOCK_FILE"; flock -n 9 || { log '[-] Outra rotina já está em execução'; return 75; }
+  RUNTIME_DIR="$(mktemp -d /tmp/cdc-backup.XXXXXX)"; SUMMARY_FILE="$RUNTIME_DIR/summary.md"; printf '| Serviço | Status | Tipo | Tamanho | Tempo | Detalhes |\n| :--- | :---: | :---: | :---: | :---: | :--- |\n' > "$SUMMARY_FILE"
+  local path found=false; for path in "$SERVICES_DIR"/*; do [[ -d "$path" ]] || continue; [[ -n "$FILTER_SERVICE" && "$(basename "$path")" != "$FILTER_SERVICE" ]] && continue; found=true; process_service "$path"; done
+  [[ "$found" == true ]] || { log "[-] Serviço não encontrado: $FILTER_SERVICE"; return 64; }; notify; (( TOTAL_FAILURES == 0 )) || return 1; log '[+] Rotina finalizada sem falhas.'
+}
+main "$@"

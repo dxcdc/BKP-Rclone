@@ -1,5 +1,7 @@
 # Prompt de Contexto e Instruções Permanentes para Inteligência Artificial (System Prompt)
 
+> **Aviso:** a stack Node.js/PostgreSQL/Nginx descrita abaixo é um modelo histórico. O [README](../README.md) é a referência arquitetural vigente da Central de Backup.
+
 Por que mantemos um arquivo de contexto dedicado para Inteligência Artificial? À medida que as bases de código crescem e os ecossistemas de infraestrutura se tornam mais complexos, os assistentes de IA que auxiliam a equipe de engenharia precisam entender instantaneamente os limites de design, as restrições de segurança e os padrões de codificação específicos do nosso projeto. Este arquivo funciona como uma "memória permanente", garantindo que qualquer IA produza código aderente ao nosso ecossistema sem reintroduzir bugs ou quebrar padrões arquiteturais.
 
 ---

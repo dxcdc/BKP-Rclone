@@ -1,0 +1,11 @@
+======================================================================
+INFORMAÇÕES DO SERVIÇO - CENTRAL DE BACKUP
+======================================================================
+Serviço: Auth - Vaultwarden Files
+Descrição: Chaves e arquivos auxiliares persistentes do Vaultwarden.
+Status de Backup: Ativo
+
+O banco transacional PostgreSQL é protegido separadamente em
+"Auth - Vaultwarden". Esta pasta preserva os demais arquivos necessários
+para recuperação completa da instância.
+======================================================================

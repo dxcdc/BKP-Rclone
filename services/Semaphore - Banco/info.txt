@@ -1,0 +1,3 @@
+Serviço: Semaphore - Banco
+Descrição: Dump consistente do MariaDB do Semaphore.
+Status de Backup: Ativo

@@ -1,0 +1,24 @@
+name: Validar motor de backup
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Validar sintaxe
+        run: bash -n scripts/backup_run.sh tests/test_backup.sh
+      - name: Executar ShellCheck
+        run: shellcheck scripts/backup_run.sh tests/test_backup.sh
+      - name: Executar testes isolados
+        run: bash tests/test_backup.sh
