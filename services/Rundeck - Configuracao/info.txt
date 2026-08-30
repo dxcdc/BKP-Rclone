@@ -1,0 +1,7 @@
+Servico: Rundeck - Configuracao
+Descricao: Compose e configuracoes operacionais da Central de Automacao CDC.
+Status de Backup: Ativo
+
+Conteudo: diretorio /opt/rundeck, criptografado antes do envio.
+Frequencia: diaria.
+Retencao: 15 dias, respeitando o minimo de copias do mecanismo central.

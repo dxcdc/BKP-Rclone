@@ -1,0 +1,7 @@
+Servico: Rundeck - Banco
+Descricao: Dump consistente do PostgreSQL da Central de Automacao CDC.
+Status de Backup: Ativo
+
+Conteudo: banco logico Rundeck em formato SQL, criptografado antes do envio.
+Frequencia: diaria.
+Retencao: 15 dias, respeitando o minimo de copias do mecanismo central.

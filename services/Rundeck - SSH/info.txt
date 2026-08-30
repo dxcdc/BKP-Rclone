@@ -1,0 +1,7 @@
+Servico: Rundeck - SSH
+Descricao: Estado persistente de SSH do usuario Rundeck.
+Status de Backup: Ativo
+
+Conteudo: volume SSH, criptografado antes do envio.
+Frequencia: diaria.
+Retencao: 15 dias, respeitando o minimo de copias do mecanismo central.
